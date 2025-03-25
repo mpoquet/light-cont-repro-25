@@ -1,35 +1,66 @@
 from subprocess import *
 import os
 
-N = 4
+N = 1
 
-FILE_OUT: str = "./file_out.txt"
+FILE_OUT: str = "./data.csv"
 IMAGE: str = "./docker-image-sysbench.tar.gz"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["podman", "docker"]
+ENGINES: list[str] = ["ctr", "podman", "docker"] #, "crictl"]
 # TODO ajouter CRI-O
 
-
-LOAD_ARGS: list[str] = ["load", "-i"]
-RUN_ARGS: list[str] = ["run", "--rm", "--network", "host"]
-
 SYSBENCH_ARGS: dict[str, list[str]] = {
-        "fileio": ["--test=fileio", "--file-test-mode=seqwr", "--file-num=1"]
+        "fileio": ["--test=fileio", "--file-test-mode=seqwr", "--file-num=1"],
+        "cpu": ["--test=cpu", "--cpu-max-prime=2000"],
         }
 
-for engine in ENGINES:
-    load_cmd = [engine] + LOAD_ARGS + [IMAGE]
-    run(load_cmd)
-    for mode in SYSBENCH_ARGS:
-        for _ in range(N):
+def print_running_cmd(cmd: list[str]):
+    cmd_joined:str = " ".join(cmd)
+    formatted_str: str = "Running: {}".format(cmd_joined)
+    print(formatted_str)
+
+
+def generate_load_cmd(engine: str) -> list[str]:
+    if engine in ["docker", "podman", "ctr"]:
+        return [engine, "load", "-i", IMAGE]
+    if engine == "crictl":
+        return [engine, "load", IMAGE]
+    return None
+
+def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
+    if engine in ["docker", "podman"]:
+        return [engine, "run", "--rm", "--network", "host", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
+    if engine == "ctr":
+        return [engine, "run", "--rm", "docker.io/library/"+IMAGE_NAME, "sysbench", "sysbench"] + sysbench_args + ["run"]
+    if engine == "crictl":
+        return [engine, "exec", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
+    return None
+
+
+def main():
+
+
+    for engine in ENGINES:
+        print("Loading image for {}...".format(engine))
+        load_cmd = generate_load_cmd(engine)
+        print_running_cmd(load_cmd)
+        run(load_cmd, stdout = DEVNULL)
+    
+    print("Begin tests")
+    for engine in ENGINES:
+        for mode in SYSBENCH_ARGS:
             sysbench_args: list[str] = SYSBENCH_ARGS[mode]
-            run_cmd = [engine] + RUN_ARGS + [IMAGE_NAME] + ["sysbench"] + sysbench_args + ["run"]
-            p1 = Popen(run_cmd, stdout = PIPE)
-            parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
-            p2 = Popen(parse_cmd, stdin = p1.stdout, stdout = PIPE)
-            p1.commumicate(p2)
+            run_cmd = generate_run_cmd(engine, sysbench_args)
+            for n in range(1, N + 1):
+                print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
+                print_running_cmd(run_cmd)
+                p1 = Popen(run_cmd, stdout = PIPE)#, stderr = DEVNULL)
+                parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
+                p2 = Popen(parse_cmd, stdin = p1.stdout, stdout = PIPE)
+                p1.communicate(p2)
 
-
+if __name__ == "__main__":
+    main()
 
 
 
