@@ -17,10 +17,13 @@
 
 #define STACK_SIZE (1024 * 1024)
 #define ROOTFS "./rootfs"
+#define MAX_PID_LENGTH 20
 
 
 
 int child(void *args);
+
+int add_child_to_cgroup(const char *cgroup_folder_path, pid_t child_pid);
 
 static int pivot_root(const char *new_root, const char *put_old)
 {
@@ -28,6 +31,10 @@ static int pivot_root(const char *new_root, const char *put_old)
 }
 
 int main(int argc, char *argv[]) {
+
+    int cgroupv2_option = 0;
+
+    const char *cgroup_folder_path = "/sys/fs/cgroup/my_cgroup";
 
     printf("Starting...\n");
 
@@ -52,6 +59,11 @@ int main(int argc, char *argv[]) {
     
     
     printf("child lancé avec PID %d\n", child_pid);
+
+    if (cgroupv2_option == 1) {
+        add_child_to_cgroup(cgroup_folder_path, child_pid);
+    }
+
     waitpid(child_pid, NULL, 0);
 
     printf("Fin du process parent\n");
@@ -78,6 +90,9 @@ int child(void *arg)
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
     sethostname("container", 10);
 
+    printf("[DEBUG][CHILD]dormance pdt 10s\n");
+    sleep(10);
+
     
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
@@ -97,6 +112,7 @@ int child(void *arg)
     snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
     if (mkdir(path, 0777) == -1 && errno != EEXIST)
         err(EXIT_FAILURE, "mkdir");
+
 
     /* And pivot the root filesystem. */
 
@@ -124,4 +140,34 @@ int child(void *arg)
 
     perror("execvp failed");
     return 1;
+}
+
+
+int add_child_to_cgroup(const char *cgroup_folder_path, pid_t child_pid) {
+
+    char proclist_path[strlen(cgroup_folder_path) + 14]; //14 caractères en plus pour rajouter '/cgroup.procs'
+    snprintf(proclist_path, sizeof(proclist_path), "%s%s", cgroup_folder_path, "/cgroup.procs");
+
+    //conversion du pid en string pour pouvoir l'écrire dans le fichier cgroup.procs
+    char child_pid_string[MAX_PID_LENGTH];
+    snprintf(child_pid_string, sizeof(child_pid_string), "%d", child_pid);
+
+
+    //création du dossier pour le cgroup, pas grave si il existe déjà
+    if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
+        err(EXIT_FAILURE, "mkdir");
+
+    //on ouvre cgroup.procs en écriture, rajout à la fin du fichier seulement
+    int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
+
+    if (procs_fd == -1) 
+        err(EXIT_FAILURE, "open");
+    
+    //on écrit le pid du child dans cgroup.procs pour le rajouter dans le cgroup
+    if (write(procs_fd, child_pid_string, strlen(child_pid_string)) == -1)
+        err(EXIT_FAILURE, "write");
+
+
+    close(procs_fd);
+    return 0;
 }
