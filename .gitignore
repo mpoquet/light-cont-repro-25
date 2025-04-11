@@ -1,2 +1,2 @@
-./code/rootfs/tmp/*
+tmp/
 ./overhead_benchmark/docker-image-sysbench.tar.gz
