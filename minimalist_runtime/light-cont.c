@@ -1,5 +1,6 @@
-//#include <fcntl.h>
 #define _GNU_SOURCE
+
+#include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,16 +15,28 @@
 #include <err.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <getopt.h>
+#include <signal.h>
 
 #define STACK_SIZE (1024 * 1024)
-#define ROOTFS "./rootfs"
+#define ROOTFS "/tmp/light-cont/rootfs"
+#define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
+#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD)
+
+int option_cgroupsv2 = 0;
 
 
+int child(void *arg);
 
-int child(void *args);
+int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
-int add_child_to_cgroup(const char *cgroup_folder_path, pid_t child_pid);
+int traitement_opt(int argc, char *argv[]);
+
+void treat_sig_donothing();
+
+int cgroup_manager_child(void *arg);
+
 
 static int pivot_root(const char *new_root, const char *put_old)
 {
@@ -32,11 +45,14 @@ static int pivot_root(const char *new_root, const char *put_old)
 
 int main(int argc, char *argv[]) {
 
-    int cgroupv2_option = 0;
+    int child_pid;
 
-    const char *cgroup_folder_path = "/sys/fs/cgroup/my_cgroup";
+    traitement_opt(argc, argv);
+
+    const char *cgroup_folder_path = CGROUP_PATH;
 
     printf("Starting...\n");
+
 
     char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
     if (stack == NULL) {
@@ -44,24 +60,32 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    //on crée d'abord un child dans nv namespace 
-    //il va lui même créer un child après avoir sethostname afin que le hostname soit à jour dès le lancement du process qu'on veut exécuter
-    // -> j'ai abandonné l'idée pour l'instant, le hostname est quand même "nobody"
 
-    //note: essayer d'utiliser clone3() à la place de clone?
-    char *child_args[] = { "./rootfs", NULL };
-    int child_pid = clone(child, stack + STACK_SIZE, CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD, child_args);
+    if (option_cgroupsv2 == 1) {
+        
+
+        if (geteuid() != 0) {
+            printf("Need to be superuser to launch with --cgroups option. Try with sudo.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        //Création d'un fils qui se mettra lui même dans un cgroup, permettant à son fils d'y être inscrit d'office
+        char *child_args[] = { (char *)cgroup_folder_path, NULL };
+        child_pid = clone(cgroup_manager_child, stack + STACK_SIZE, SIGCHLD, child_args);
+
+
+
+    } else {
+        
+        //note: essayer d'utiliser clone3() à la place de clone?
+        char *child_args[] = { ROOTFS, NULL };
+        child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+    }
+
 
     if (child_pid == -1) {
         perror("clone");
         return 1;
-    }
-    
-    
-    printf("child lancé avec PID %d\n", child_pid);
-
-    if (cgroupv2_option == 1) {
-        add_child_to_cgroup(cgroup_folder_path, child_pid);
     }
 
     waitpid(child_pid, NULL, 0);
@@ -82,6 +106,7 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
+
     printf("Dans le nv namespace isolé\n");
     printf("[CHILD] PID: %d\n", getpid());
 
@@ -90,9 +115,11 @@ int child(void *arg)
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
     sethostname("container", 10);
 
+
+#ifdef DEBUG
     printf("[DEBUG][CHILD]dormance pdt 10s\n");
     sleep(10);
-
+#endif
     
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
@@ -135,6 +162,7 @@ int child(void *arg)
         perror("rmdir");
 
 
+
     char *argshell[] = {"/bin/bash", NULL};
     execvp(argshell[0], argshell);
 
@@ -143,14 +171,14 @@ int child(void *arg)
 }
 
 
-int add_child_to_cgroup(const char *cgroup_folder_path, pid_t child_pid) {
+int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
 
-    char proclist_path[strlen(cgroup_folder_path) + 14]; //14 caractères en plus pour rajouter '/cgroup.procs'
+    char proclist_path[strlen(cgroup_folder_path) + strlen("/cgroup.procs ")]; //14 caractères en plus pour rajouter '/cgroup.procs'
     snprintf(proclist_path, sizeof(proclist_path), "%s%s", cgroup_folder_path, "/cgroup.procs");
 
     //conversion du pid en string pour pouvoir l'écrire dans le fichier cgroup.procs
-    char child_pid_string[MAX_PID_LENGTH];
-    snprintf(child_pid_string, sizeof(child_pid_string), "%d", child_pid);
+    char pid_string[MAX_PID_LENGTH];
+    snprintf(pid_string, sizeof(pid_string), "%d", pid);
 
 
     //création du dossier pour le cgroup, pas grave si il existe déjà
@@ -158,16 +186,107 @@ int add_child_to_cgroup(const char *cgroup_folder_path, pid_t child_pid) {
         err(EXIT_FAILURE, "mkdir");
 
     //on ouvre cgroup.procs en écriture, rajout à la fin du fichier seulement
+    printf("%s\n", proclist_path);
     int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
 
     if (procs_fd == -1) 
-        err(EXIT_FAILURE, "open");
+        err(EXIT_FAILURE, "cgroups - open");
     
     //on écrit le pid du child dans cgroup.procs pour le rajouter dans le cgroup
-    if (write(procs_fd, child_pid_string, strlen(child_pid_string)) == -1)
+    if (write(procs_fd, pid_string, strlen(pid_string)) == -1)
         err(EXIT_FAILURE, "write");
 
 
     close(procs_fd);
     return 0;
 }
+
+
+int traitement_opt(int argc, char *argv[]) {
+
+    //voir exemple https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
+
+    int c;
+
+  while (1)
+    {
+      static struct option long_options[] =
+        {
+          
+          /* These options don’t set a flag.
+             We distinguish them by their indices. */
+          {"cgroups",     no_argument,       0, 'a'},
+        };
+        
+      /* getopt_long stores the option index here. */
+      int option_index = 0;
+
+      c = getopt_long (argc, argv, "a",
+                       long_options, &option_index);
+
+      /* Detect the end of the options. */
+      if (c == -1)
+        break;
+
+      switch (c)
+        {
+
+        case 'a':
+          option_cgroupsv2 = 1;
+          break;
+
+        case 'b':
+        printf("cgroups v1 non supportés pour l'instant.\n");
+        break;
+
+
+        case '?':
+          /* getopt_long already printed an error message. */
+          break;
+
+        default:
+          abort ();
+        }
+    }
+
+  /* Print any remaining command line arguments (not options). */
+  if (optind < argc)
+    {
+      printf ("non-option ARGV-elements: ");
+      while (optind < argc)
+        printf ("%s ", argv[optind++]);
+      putchar ('\n');
+    }
+
+    return 0;
+}
+
+
+int cgroup_manager_child(void *arg) {
+    char        path[PATH_MAX];
+    char        **args = arg;
+    char        *cgroup_folder_path = args[0];
+
+    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    if (stack == NULL) {
+        perror("malloc");
+        return 1;
+    }
+
+    add_to_cgroup(cgroup_folder_path, getpid());
+    printf("Ajouté au cgroup\n");
+
+
+    char *child_args[] = { ROOTFS, NULL };
+    int child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+
+    printf("PID du processus exécutant l'image: %d", child_pid);
+
+    waitpid(child_pid, NULL, 0);
+
+    return 0;
+
+}
+
+void treat_sig_donothing() {}
+
