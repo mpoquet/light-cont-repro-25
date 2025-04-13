@@ -5,15 +5,12 @@ TODO
 Runtime minimaliste:
 cgroups v2 supportés : --cgroups au lancement
 Inclus le child dans un nouveau cgroups (v2) (Note: Deux fils sont créés, le premier servant uniquement à s'inclure lui-même et ses descendants dans le cgroup)
--> Problème: besoin de lancer avec sudo pour modifier /sys/fs/cgroup
-    -> en tant que su, on ne peut plus créer de répertoire dans le dossier utilisateur (pourquoi?)
-        -> donc erreur en créant le dossier oldroot lors du pivot_root
 
-Pas de comptabilité des ressources utilisées pour l'instant
+-> Problème de permission avec le su réglé, les répertoires étaient créés sans préciser de permissions, maintenant ils le sont avec 0777
+    -> changement du répertoire de travail pour l'instant, il est dans /tmp/light-cont (créé lors du make dans le script sh)
+
 
 TODO:
-    - régler le problème du super utilisateur qui ne peut pas créer de dossier dans un répertoire utilisateur
-        -> créer dans /tmp ? Tous les utilisateurs ont les droits dessus
     - Lancer une image passée en paramètre
     - Compatibilité OCI
 

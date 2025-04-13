@@ -8,10 +8,9 @@ ubuntu_fs.tar:
 	./pull_ubuntufs.sh
 
 rootfs: ubuntu_fs.tar
-	mkdir rootfs
-	tar -xvf ubuntu_fs.tar -C ./rootfs
+	tar -xvf /tmp/light-cont/ubuntu_fs.tar -C /tmp/light-cont/rootfs
 
 clean:
 	rm -rf $(PROG)
-	rm -rf ubuntu_fs.tar
-	rm -rf rootfs
+	rm -rf /tmp/light-cont/ubuntu_fs.tar
+	rm -rf /tmp/light-cont/rootfs

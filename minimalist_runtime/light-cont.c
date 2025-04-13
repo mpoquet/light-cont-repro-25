@@ -19,9 +19,10 @@
 #include <signal.h>
 
 #define STACK_SIZE (1024 * 1024)
-#define ROOTFS "./rootfs"
+#define ROOTFS "/tmp/light-cont/rootfs"
+#define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-#define NAMESPACES_FLAGS CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD
+#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD)
 
 int option_cgroupsv2 = 0;
 
@@ -48,7 +49,7 @@ int main(int argc, char *argv[]) {
 
     traitement_opt(argc, argv);
 
-    const char *cgroup_folder_path = "/sys/fs/cgroup/light-cont";
+    const char *cgroup_folder_path = CGROUP_PATH;
 
     printf("Starting...\n");
 
@@ -64,7 +65,7 @@ int main(int argc, char *argv[]) {
         
 
         if (geteuid() != 0) {
-            printf("Need to be superuser to launch with --cgroups option. Try sudo.\n");
+            printf("Need to be superuser to launch with --cgroups option. Try with sudo.\n");
             exit(EXIT_FAILURE);
         }
 
@@ -77,8 +78,8 @@ int main(int argc, char *argv[]) {
     } else {
         
         //note: essayer d'utiliser clone3() à la place de clone?
-        char *child_args[] = { "./rootfs", NULL };
-        child_pid = clone(child, stack + STACK_SIZE, CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD, child_args);
+        char *child_args[] = { ROOTFS, NULL };
+        child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
     }
 
 
@@ -159,6 +160,7 @@ int child(void *arg)
         perror("umount2");
     if (rmdir(put_old) == -1)
         perror("rmdir");
+
 
 
     char *argshell[] = {"/bin/bash", NULL};
@@ -275,8 +277,8 @@ int cgroup_manager_child(void *arg) {
     printf("Ajouté au cgroup\n");
 
 
-    char *child_args[] = { "./rootfs", NULL };
-    int child_pid = clone(child, stack + STACK_SIZE, CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD, child_args);
+    char *child_args[] = { ROOTFS, NULL };
+    int child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
 
     printf("PID du processus exécutant l'image: %d", child_pid);
 
