@@ -19,12 +19,15 @@
 #include <signal.h>
 
 #define STACK_SIZE (1024 * 1024)
-#define ROOTFS "/tmp/light-cont/rootfs"
+//"/tmp/light-cont/rootfs"
+#define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD)
+#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 
 int option_cgroupsv2 = 0;
+
+char image_loc[PATH_MAX];
 
 
 int child(void *arg);
@@ -36,6 +39,8 @@ int traitement_opt(int argc, char *argv[]);
 void treat_sig_donothing();
 
 int cgroup_manager_child(void *arg);
+
+int open_image_shell(const char *root_path);
 
 
 static int pivot_root(const char *new_root, const char *put_old)
@@ -163,10 +168,7 @@ int child(void *arg)
 
 
 
-    char *argshell[] = {"/bin/bash", NULL};
-    execvp(argshell[0], argshell);
-
-    perror("execvp failed");
+    open_image_shell("");
     return 1;
 }
 
@@ -213,15 +215,17 @@ int traitement_opt(int argc, char *argv[]) {
       static struct option long_options[] =
         {
           
-          /* These options don’t set a flag.
-             We distinguish them by their indices. */
-          {"cgroups",     no_argument,       0, 'a'},
+          {"cgroups",     no_argument,       0, 'c'},
+          {"network",     no_argument,       0, 'n'},
+          {"path",        required_argument, 0, 'p'},
+          {"in",          required_argument, 0, 'i'},
+          {"out",         required_argument, 0, 'o'},
         };
         
       /* getopt_long stores the option index here. */
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "a",
+      c = getopt_long (argc, argv, "cnp:i:o:",
                        long_options, &option_index);
 
       /* Detect the end of the options. */
@@ -231,21 +235,38 @@ int traitement_opt(int argc, char *argv[]) {
       switch (c)
         {
 
-        case 'a':
-          option_cgroupsv2 = 1;
-          break;
+        case 'c':
+            printf("Option: cgroups\n");
+            option_cgroupsv2 = 1;
+            break;
 
-        case 'b':
-        printf("cgroups v1 non supportés pour l'instant.\n");
-        break;
+        case 'n':
+            //désactiver isolation network
+            printf("Désactiver isolation network - pas encore implémenté\n");
+            break;
 
+        case 'p':
+            //changer variable root_path
+            snprintf(image_loc, sizeof(image_loc), "%s", optarg);
+            printf("Emplacement de l'image (sous forme de répertoire): %s - pas encore implémenté\n", optarg);
+            break;
+
+        case 'i':
+            //rep d'entrée à monter en rd-only
+            printf("Répertoire d'entrée à monter (rd-only): %s - pas encore implémenté\n", optarg);
+            break;
+
+        case 'o':
+            //rep de sortie à monter en rd-wr
+            printf("Répertoire de sortie à monter (rd-wr): %s - pas encore implémenté\n", optarg);
+            break;
 
         case '?':
-          /* getopt_long already printed an error message. */
-          break;
+            /* getopt_long already printed an error message. */
+            break;
 
         default:
-          abort ();
+            abort ();
         }
     }
 
@@ -286,6 +307,21 @@ int cgroup_manager_child(void *arg) {
 
     return 0;
 
+}
+
+
+int open_image_shell(const char *root_path) {
+
+    char sh_path[PATH_MAX];
+
+    snprintf(sh_path, sizeof(sh_path), "%s/bin/sh", root_path);
+
+
+    char *argshell[] = {sh_path, NULL};
+    execvp(argshell[0], argshell);
+
+    perror("execvp failed");
+    return 1;    
 }
 
 void treat_sig_donothing() {}
