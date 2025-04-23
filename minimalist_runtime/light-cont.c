@@ -26,8 +26,15 @@
 #define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 
 int option_cgroupsv2 = 0;
+int opt_in = 0;
+int opt_out = 0;
 
 char image_loc[PATH_MAX];
+char in_directory[PATH_MAX];
+char out_directory[PATH_MAX];
+
+char new_in[PATH_MAX];
+char new_out[PATH_MAX];
 
 
 int child(void *arg);
@@ -58,6 +65,27 @@ int main(int argc, char *argv[]) {
 
     printf("Starting...\n");
 
+    //Default image location if none has been specified
+    if (!*image_loc) {
+        printf("No image location has been specified. Default: ./rootfs\n");
+        snprintf(image_loc, sizeof(image_loc), "%s", ROOTFS);
+    }
+
+    //Making paths to in and out dirs
+    snprintf(new_in, sizeof(new_in), "%s%s", image_loc, "/in_dir");
+    snprintf(new_out, sizeof(new_out), "%s%s", image_loc, "/out_dir");
+
+    //Check if the specified directory actually exists
+    DIR *image_dir = opendir(image_loc);
+    if (image_dir) {
+        closedir(image_dir);
+    } else if (errno == ENOENT) {
+        perror("Path to the directory where the image fs is located does not exist.\n");
+        exit(EXIT_FAILURE);
+    } else {
+        err(EXIT_FAILURE, "\n");
+    }
+
 
     char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
     if (stack == NULL) {
@@ -66,9 +94,8 @@ int main(int argc, char *argv[]) {
     }
 
 
+    //Check if the user wish to include the container in a cgroup
     if (option_cgroupsv2 == 1) {
-        
-
         if (geteuid() != 0) {
             printf("Need to be superuser to launch with --cgroups option. Try with sudo.\n");
             exit(EXIT_FAILURE);
@@ -83,7 +110,7 @@ int main(int argc, char *argv[]) {
     } else {
         
         //note: essayer d'utiliser clone3() à la place de clone?
-        char *child_args[] = { ROOTFS, NULL };
+        char *child_args[] = { image_loc, NULL };
         child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
     }
 
@@ -96,6 +123,22 @@ int main(int argc, char *argv[]) {
     waitpid(child_pid, NULL, 0);
 
     printf("Fin du process parent\n");
+
+
+
+    //Unmounting and deleting in/out directories in the image
+    if (opt_in) {
+        umount2(new_in, MNT_DETACH);
+        if (rmdir(new_in) == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
+    if (opt_out) {
+        umount2(new_out, MNT_DETACH);
+        if (rmdir(new_out) == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
 
     free(stack);
     return 0;
@@ -111,9 +154,6 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
-
-    printf("Dans le nv namespace isolé\n");
-    printf("[CHILD] PID: %d\n", getpid());
 
     // Changer le hostname (UTS namespace)
     //affiche nobody à la place
@@ -139,6 +179,40 @@ int child(void *arg)
     if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1)
         err(EXIT_FAILURE, "mount-MS_BIND");
 
+
+    //Mounting the entry directory in read-only
+    if (*in_directory) { //if in_directory not null
+
+
+        if (mkdir(new_in, 0777) == -1 && errno != EEXIST) {
+            err(EXIT_FAILURE, "mkdir new_in");
+        }
+
+        if (mount(in_directory, new_in, NULL, MS_BIND, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-MS_BIND - in_directory");
+        }
+
+        //RDONLY have to be executed on a remount, it doesn't apply on the first bind mount
+        if (mount(NULL, new_in, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-REMOUNT-RDONLY - in_directory");
+        }
+    }
+
+    if (*out_directory) {
+        
+
+        if (mkdir(new_out, 0777) == -1 && errno != EEXIST) {
+            err(EXIT_FAILURE, "mkdir new_out");
+        }
+
+        if (mount(out_directory, new_out, NULL, MS_BIND, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-MS_BIND - out_directory");
+        }
+
+    }
+
+    
+    
     /* Create directory to which old root will be pivoted. */
 
     snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
@@ -236,7 +310,7 @@ int traitement_opt(int argc, char *argv[]) {
         {
 
         case 'c':
-            printf("Option: cgroups\n");
+            printf("Cgroup option selected. The container will be placed in the cgrouplocated in /sys/fs/cgroup/light-cont\n");
             option_cgroupsv2 = 1;
             break;
 
@@ -248,17 +322,21 @@ int traitement_opt(int argc, char *argv[]) {
         case 'p':
             //changer variable root_path
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
-            printf("Emplacement de l'image (sous forme de répertoire): %s - pas encore implémenté\n", optarg);
+            printf("Image directory location: %s\n", optarg);
             break;
 
         case 'i':
             //rep d'entrée à monter en rd-only
-            printf("Répertoire d'entrée à monter (rd-only): %s - pas encore implémenté\n", optarg);
+            snprintf(in_directory, sizeof(in_directory), "%s", optarg);
+            opt_in = 1;
+            printf("Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
             break;
 
         case 'o':
             //rep de sortie à monter en rd-wr
-            printf("Répertoire de sortie à monter (rd-wr): %s - pas encore implémenté\n", optarg);
+            snprintf(out_directory, sizeof(out_directory), "%s", optarg);
+            opt_out = 1;
+            printf("Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
             break;
 
         case '?':
@@ -298,10 +376,10 @@ int cgroup_manager_child(void *arg) {
     printf("Ajouté au cgroup\n");
 
 
-    char *child_args[] = { ROOTFS, NULL };
+    char *child_args[] = { image_loc, NULL };
     int child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
 
-    printf("PID du processus exécutant l'image: %d", child_pid);
+    printf("Container PID: %d", child_pid);
 
     waitpid(child_pid, NULL, 0);
 
