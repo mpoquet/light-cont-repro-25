@@ -1,0 +1,11 @@
+
+Décomposition Des Privilègges en (Namespaces - Capabilités (leur explication) , Besoin d'être root , Mapping d'id - Version Cgroup )
+Laisser Les Contraintes Déjà Existantes (Mais dire leurs sources)
+RunC - Crun - Docker en mode privileges - DOcker rootless - Podman - Udocker - **Cri-O**
+
+Utiliser le Script d'évaluation de l'overhead pour générer les métriques
+Représenter chaque container sur un x et l'overhead y
+Tracer pour chaque programme et expliquer
+
+
+
