@@ -23,11 +23,12 @@
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 
 int option_cgroupsv2 = 0;
 int opt_in = 0;
 int opt_out = 0;
+unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
 
 char image_loc[PATH_MAX];
 char in_directory[PATH_MAX];
@@ -43,11 +44,13 @@ int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
 int traitement_opt(int argc, char *argv[]);
 
-void treat_sig_donothing();
-
 int cgroup_manager_child(void *arg);
 
 int open_image_shell(const char *root_path);
+
+void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
+
+void print_help();
 
 
 static int pivot_root(const char *new_root, const char *put_old)
@@ -111,7 +114,7 @@ int main(int argc, char *argv[]) {
         
         //note: essayer d'utiliser clone3() à la place de clone?
         char *child_args[] = { image_loc, NULL };
-        child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+        child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
     }
 
 
@@ -128,13 +131,17 @@ int main(int argc, char *argv[]) {
 
     //Unmounting and deleting in/out directories in the image
     if (opt_in) {
-        umount2(new_in, MNT_DETACH);
+        if (umount2(new_in, MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount in_dir");
+        }
         if (rmdir(new_in) == -1) {
             err(EXIT_FAILURE, "rmdir");
         }
     }
     if (opt_out) {
-        umount2(new_out, MNT_DETACH);
+        if (umount2(new_out, MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount out_dir");
+        }
         if (rmdir(new_out) == -1) {
             err(EXIT_FAILURE, "rmdir");
         }
@@ -288,8 +295,8 @@ int traitement_opt(int argc, char *argv[]) {
     {
       static struct option long_options[] =
         {
-          
-          {"cgroups",     no_argument,       0, 'c'},
+          {"help",        no_argument,       0, 'h'},
+          {"cgroup",      no_argument,       0, 'c'},
           {"network",     no_argument,       0, 'n'},
           {"path",        required_argument, 0, 'p'},
           {"in",          required_argument, 0, 'i'},
@@ -299,7 +306,7 @@ int traitement_opt(int argc, char *argv[]) {
       /* getopt_long stores the option index here. */
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "cnp:i:o:",
+      c = getopt_long (argc, argv, "hcnp:i:o:",
                        long_options, &option_index);
 
       /* Detect the end of the options. */
@@ -309,6 +316,10 @@ int traitement_opt(int argc, char *argv[]) {
       switch (c)
         {
 
+        case 'h':
+            print_help();
+            break;
+
         case 'c':
             printf("Cgroup option selected. The container will be placed in the cgrouplocated in /sys/fs/cgroup/light-cont\n");
             option_cgroupsv2 = 1;
@@ -316,7 +327,8 @@ int traitement_opt(int argc, char *argv[]) {
 
         case 'n':
             //désactiver isolation network
-            printf("Désactiver isolation network - pas encore implémenté\n");
+            printf("Network isolation disabled\n");
+            remove_flag(&clone_flags, CLONE_NEWNET);
             break;
 
         case 'p':
@@ -340,7 +352,7 @@ int traitement_opt(int argc, char *argv[]) {
             break;
 
         case '?':
-            /* getopt_long already printed an error message. */
+            printf("Option not recognized. Please use --help (-h) option to display help text.\n");
             break;
 
         default:
@@ -377,7 +389,12 @@ int cgroup_manager_child(void *arg) {
 
 
     char *child_args[] = { image_loc, NULL };
-    int child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+    int child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
+
+    if (child_pid == -1) {
+        perror("clone");
+        return 1;
+    }
 
     printf("Container PID: %d", child_pid);
 
@@ -402,5 +419,25 @@ int open_image_shell(const char *root_path) {
     return 1;    
 }
 
-void treat_sig_donothing() {}
+void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
+    *flags &= ~flag_to_remove;
+}
 
+
+void print_help() {
+    printf(
+"======================================= LIGHT-CONT: HELP =======================================\n\n"
+        "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
+        "Please note that this software is still under development.\n"
+        "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
+        "\nOptions:\n"
+        "Display this help message:\t\t\t--help\t\t-h\n"
+        "Specify image location (directory):\t\t--path\t\t-p\n"
+        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\n"
+        "Disable Network isolation:\t\t\t--network\t-n\t(not yet implemented)\n"
+        "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
+        "Specify an output directory (read-write):\t--out\t\t-o\n"
+    
+    );
+    exit(EXIT_SUCCESS);
+}
