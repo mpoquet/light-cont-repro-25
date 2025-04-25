@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <sched.h>
+#include <linux/sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,15 +17,25 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <getopt.h>
-#include <signal.h>
+
 
 #define STACK_SIZE (1024 * 1024)
-#define ROOTFS "/tmp/light-cont/rootfs"
+#define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-#define NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 
 int option_cgroupsv2 = 0;
+int opt_in = 0;
+int opt_out = 0;
+unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
+
+char image_loc[PATH_MAX];
+char in_directory[PATH_MAX];
+char out_directory[PATH_MAX];
+
+char new_in[PATH_MAX];
+char new_out[PATH_MAX];
 
 
 int child(void *arg);
@@ -33,9 +44,15 @@ int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
 int traitement_opt(int argc, char *argv[]);
 
-void treat_sig_donothing();
-
 int cgroup_manager_child(void *arg);
+
+int open_image_shell(const char *root_path);
+
+int open_image_sh_here();
+
+void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
+
+void print_help();
 
 
 static int pivot_root(const char *new_root, const char *put_old)
@@ -51,7 +68,27 @@ int main(int argc, char *argv[]) {
 
     const char *cgroup_folder_path = CGROUP_PATH;
 
-    printf("Starting...\n");
+
+    //Default image location if none has been specified
+    if (!*image_loc) {
+        printf("No image location has been specified. Default: ./rootfs\n");
+        snprintf(image_loc, sizeof(image_loc), "%s", ROOTFS);
+    }
+
+    //Making paths to in and out dirs
+    snprintf(new_in, sizeof(new_in), "%s%s", image_loc, "/in_dir");
+    snprintf(new_out, sizeof(new_out), "%s%s", image_loc, "/out_dir");
+
+    //Check if the specified directory actually exists
+    DIR *image_dir = opendir(image_loc);
+    if (image_dir) {
+        closedir(image_dir);
+    } else if (errno == ENOENT) {
+        perror("Path to the directory where the image fs is located does not exist.\n");
+        exit(EXIT_FAILURE);
+    } else {
+        err(EXIT_FAILURE, "\n");
+    }
 
 
     char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
@@ -61,9 +98,8 @@ int main(int argc, char *argv[]) {
     }
 
 
+    //Check if the user wish to include the container in a cgroup
     if (option_cgroupsv2 == 1) {
-        
-
         if (geteuid() != 0) {
             printf("Need to be superuser to launch with --cgroups option. Try with sudo.\n");
             exit(EXIT_FAILURE);
@@ -78,8 +114,8 @@ int main(int argc, char *argv[]) {
     } else {
         
         //note: essayer d'utiliser clone3() à la place de clone?
-        char *child_args[] = { ROOTFS, NULL };
-        child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+        char *child_args[] = { image_loc, NULL };
+        child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
     }
 
 
@@ -91,6 +127,7 @@ int main(int argc, char *argv[]) {
     waitpid(child_pid, NULL, 0);
 
     printf("Fin du process parent\n");
+
 
     free(stack);
     return 0;
@@ -107,19 +144,13 @@ int child(void *arg)
     const char  *put_old = "/oldrootfs";
 
 
-    printf("Dans le nv namespace isolé\n");
-    printf("[CHILD] PID: %d\n", getpid());
-
     // Changer le hostname (UTS namespace)
     //affiche nobody à la place
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
     sethostname("container", 10);
 
 
-#ifdef DEBUG
-    printf("[DEBUG][CHILD]dormance pdt 10s\n");
-    sleep(10);
-#endif
+    
     
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
@@ -134,6 +165,47 @@ int child(void *arg)
     if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1)
         err(EXIT_FAILURE, "mount-MS_BIND");
 
+
+    //Mounting the entry directory in read-only
+    if (*in_directory) { //if in_directory not null
+
+
+        if (mkdir(new_in, 0777) == -1 && errno != EEXIST) {
+            err(EXIT_FAILURE, "mkdir new_in");
+        }
+        /*if (chmod(new_in, 0777) == -1) {
+            err(EXIT_FAILURE, "chmod in_dir");
+        }*/
+
+        if (mount(in_directory, new_in, NULL, MS_BIND, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-MS_BIND - in_directory");
+        }
+
+        //RDONLY have to be executed on a remount, it doesn't apply on the first bind mount
+        if (mount(NULL, new_in, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-REMOUNT-RDONLY - in_directory");
+        }
+    }
+
+    if (*out_directory) { //if out_directory not null
+        
+
+        if (mkdir(new_out, 0777) == -1 && errno != EEXIST) {
+            err(EXIT_FAILURE, "mkdir new_out");
+        }
+        /*if (chmod(new_out, 0777) == -1) {
+            err(EXIT_FAILURE, "chmod out_dir");
+        }*/
+
+        //mounting in read-write, in order to let the container write output files
+        if (mount(out_directory, new_out, NULL, MS_BIND, NULL) == -1) {
+            err(EXIT_FAILURE, "mount-MS_BIND - out_directory");
+        }
+
+    }
+
+    
+    
     /* Create directory to which old root will be pivoted. */
 
     snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
@@ -147,7 +219,6 @@ int child(void *arg)
     if (pivot_root(new_root, path) == -1)
         err(EXIT_FAILURE, "pivot_root");
 
-    printf("pivot_root done.\n");
 
     /* Switch the current working directory to "/". */
 
@@ -162,12 +233,44 @@ int child(void *arg)
         perror("rmdir");
 
 
+    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    if (stack == NULL) {
+        perror("malloc");
+        return 1;
+    }
 
-    char *argshell[] = {"/bin/bash", NULL};
-    execvp(argshell[0], argshell);
 
-    perror("execvp failed");
-    return 1;
+
+    //Pour l'instant obligé de refaire un 2eme (ou 3eme) clone()
+    //A terme 2 clone() (ou clone3()) max seront suffisant je pense, il faut juste refaire une partie de main() et child()
+    //Possiblement, on aura plus besoin de cgroups manager child, avec le flag CLONE_INTO_CGROUP et clone3() ?
+    pid_t child2_pid = clone(open_image_sh_here, stack + STACK_SIZE, SIGCHLD, NULL);
+
+    if (child2_pid == -1) {
+        err(EXIT_FAILURE,"clone 2");
+    }
+
+    waitpid(child2_pid, NULL, 0);
+
+    if (opt_in) {
+        if (umount2("./in_dir", MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount in_dir");
+        }
+        if (rmdir("./in_dir") == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
+    if (opt_out) {
+        if (umount2("./out_dir", MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount out_dir");
+        }
+        if (rmdir("./out_dir") == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
+
+    free(stack);
+    return 0;
 }
 
 
@@ -186,7 +289,6 @@ int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
         err(EXIT_FAILURE, "mkdir");
 
     //on ouvre cgroup.procs en écriture, rajout à la fin du fichier seulement
-    printf("%s\n", proclist_path);
     int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
 
     if (procs_fd == -1) 
@@ -212,40 +314,68 @@ int traitement_opt(int argc, char *argv[]) {
     {
       static struct option long_options[] =
         {
-          
-          /* These options don’t set a flag.
-             We distinguish them by their indices. */
-          {"cgroups",     no_argument,       0, 'a'},
+          {"help",        no_argument,       0, 'h'},
+          {"cgroup",      no_argument,       0, 'c'},
+          {"network",     no_argument,       0, 'n'},
+          {"path",        required_argument, 0, 'p'},
+          {"in",          required_argument, 0, 'i'},
+          {"out",         required_argument, 0, 'o'},
         };
         
-      /* getopt_long stores the option index here. */
+      
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "a",
+      c = getopt_long (argc, argv, "hcnp:i:o:",
                        long_options, &option_index);
 
-      /* Detect the end of the options. */
+      
       if (c == -1)
         break;
 
       switch (c)
         {
 
-        case 'a':
-          option_cgroupsv2 = 1;
-          break;
+        case 'h':
+            print_help();
+            break;
 
-        case 'b':
-        printf("cgroups v1 non supportés pour l'instant.\n");
-        break;
+        case 'c':
+            printf("Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
+            option_cgroupsv2 = 1;
+            break;
 
+        case 'n':
+            //désactiver isolation network
+            printf("Network isolation disabled\n");
+            remove_flag(&clone_flags, CLONE_NEWNET);
+            break;
+
+        case 'p':
+            //changer variable root_path
+            snprintf(image_loc, sizeof(image_loc), "%s", optarg);
+            printf("Image directory location: %s\n", optarg);
+            break;
+
+        case 'i':
+            //rep d'entrée à monter en rd-only
+            snprintf(in_directory, sizeof(in_directory), "%s", optarg);
+            opt_in = 1;
+            printf("Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
+            break;
+
+        case 'o':
+            //rep de sortie à monter en rd-wr
+            snprintf(out_directory, sizeof(out_directory), "%s", optarg);
+            opt_out = 1;
+            printf("Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
+            break;
 
         case '?':
-          /* getopt_long already printed an error message. */
-          break;
+            printf("Option not recognized. Please use --help (-h) option to display help text.\n");
+            break;
 
         default:
-          abort ();
+            abort ();
         }
     }
 
@@ -267,20 +397,24 @@ int cgroup_manager_child(void *arg) {
     char        **args = arg;
     char        *cgroup_folder_path = args[0];
 
-    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    char *stack = malloc(STACK_SIZE); 
     if (stack == NULL) {
         perror("malloc");
         return 1;
     }
 
     add_to_cgroup(cgroup_folder_path, getpid());
-    printf("Ajouté au cgroup\n");
 
 
-    char *child_args[] = { ROOTFS, NULL };
-    int child_pid = clone(child, stack + STACK_SIZE, NAMESPACES_FLAGS, child_args);
+    char *child_args[] = { image_loc, NULL };
+    int child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
 
-    printf("PID du processus exécutant l'image: %d", child_pid);
+    if (child_pid == -1) {
+        perror("clone");
+        return 1;
+    }
+
+    printf("Container PID: %d", child_pid);
 
     waitpid(child_pid, NULL, 0);
 
@@ -288,5 +422,45 @@ int cgroup_manager_child(void *arg) {
 
 }
 
-void treat_sig_donothing() {}
 
+int open_image_shell(const char *root_path) {
+
+    char sh_path[PATH_MAX];
+
+    snprintf(sh_path, sizeof(sh_path), "%s/bin/sh", root_path);
+
+
+    char *argshell[] = {sh_path, NULL};
+    execvp(argshell[0], argshell);
+
+    perror("execvp failed");
+    return 1;    
+}
+
+int open_image_sh_here() {
+    return open_image_shell("");
+}
+
+void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
+    *flags &= ~flag_to_remove;
+}
+
+
+void print_help() {
+    printf(
+        "\n\n"
+        "======================================= LIGHT-CONT: HELP =======================================\n\n"
+        "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
+        "Please note that this software is still under development.\n"
+        "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
+        "\nOptions:\n"
+        "Display this help message:\t\t\t--help\t\t-h\n"
+        "Specify image location (directory):\t\t--path\t\t-p\n"
+        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\n"
+        "Disable Network isolation:\t\t\t--network\t-n\t(not yet implemented)\n"
+        "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
+        "Specify an output directory (read-write):\t--out\t\t-o\n"
+    
+    );
+    exit(EXIT_SUCCESS);
+}
