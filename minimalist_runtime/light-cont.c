@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <sched.h>
+#include <linux/sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,10 +17,9 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <getopt.h>
-#include <signal.h>
+
 
 #define STACK_SIZE (1024 * 1024)
-//"/tmp/light-cont/rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
@@ -48,6 +48,8 @@ int cgroup_manager_child(void *arg);
 
 int open_image_shell(const char *root_path);
 
+int open_image_sh_here();
+
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
 
 void print_help();
@@ -66,7 +68,6 @@ int main(int argc, char *argv[]) {
 
     const char *cgroup_folder_path = CGROUP_PATH;
 
-    printf("Starting...\n");
 
     //Default image location if none has been specified
     if (!*image_loc) {
@@ -128,25 +129,6 @@ int main(int argc, char *argv[]) {
     printf("Fin du process parent\n");
 
 
-
-    //Unmounting and deleting in/out directories in the image
-    if (opt_in) {
-        if (umount2(new_in, MNT_DETACH) == -1) {
-            err(EXIT_FAILURE, "unmount in_dir");
-        }
-        if (rmdir(new_in) == -1) {
-            err(EXIT_FAILURE, "rmdir");
-        }
-    }
-    if (opt_out) {
-        if (umount2(new_out, MNT_DETACH) == -1) {
-            err(EXIT_FAILURE, "unmount out_dir");
-        }
-        if (rmdir(new_out) == -1) {
-            err(EXIT_FAILURE, "rmdir");
-        }
-    }
-
     free(stack);
     return 0;
     
@@ -168,10 +150,7 @@ int child(void *arg)
     sethostname("container", 10);
 
 
-#ifdef DEBUG
-    printf("[DEBUG][CHILD]dormance pdt 10s\n");
-    sleep(10);
-#endif
+    
     
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
@@ -194,6 +173,9 @@ int child(void *arg)
         if (mkdir(new_in, 0777) == -1 && errno != EEXIST) {
             err(EXIT_FAILURE, "mkdir new_in");
         }
+        /*if (chmod(new_in, 0777) == -1) {
+            err(EXIT_FAILURE, "chmod in_dir");
+        }*/
 
         if (mount(in_directory, new_in, NULL, MS_BIND, NULL) == -1) {
             err(EXIT_FAILURE, "mount-MS_BIND - in_directory");
@@ -205,13 +187,17 @@ int child(void *arg)
         }
     }
 
-    if (*out_directory) {
+    if (*out_directory) { //if out_directory not null
         
 
         if (mkdir(new_out, 0777) == -1 && errno != EEXIST) {
             err(EXIT_FAILURE, "mkdir new_out");
         }
+        /*if (chmod(new_out, 0777) == -1) {
+            err(EXIT_FAILURE, "chmod out_dir");
+        }*/
 
+        //mounting in read-write, in order to let the container write output files
         if (mount(out_directory, new_out, NULL, MS_BIND, NULL) == -1) {
             err(EXIT_FAILURE, "mount-MS_BIND - out_directory");
         }
@@ -233,7 +219,6 @@ int child(void *arg)
     if (pivot_root(new_root, path) == -1)
         err(EXIT_FAILURE, "pivot_root");
 
-    printf("pivot_root done.\n");
 
     /* Switch the current working directory to "/". */
 
@@ -248,9 +233,44 @@ int child(void *arg)
         perror("rmdir");
 
 
+    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    if (stack == NULL) {
+        perror("malloc");
+        return 1;
+    }
 
-    open_image_shell("");
-    return 1;
+
+
+    //Pour l'instant obligé de refaire un 2eme (ou 3eme) clone()
+    //A terme 2 clone() (ou clone3()) max seront suffisant je pense, il faut juste refaire une partie de main() et child()
+    //Possiblement, on aura plus besoin de cgroups manager child, avec le flag CLONE_INTO_CGROUP et clone3() ?
+    pid_t child2_pid = clone(open_image_sh_here, stack + STACK_SIZE, SIGCHLD, NULL);
+
+    if (child2_pid == -1) {
+        err(EXIT_FAILURE,"clone 2");
+    }
+
+    waitpid(child2_pid, NULL, 0);
+
+    if (opt_in) {
+        if (umount2("./in_dir", MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount in_dir");
+        }
+        if (rmdir("./in_dir") == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
+    if (opt_out) {
+        if (umount2("./out_dir", MNT_DETACH) == -1) {
+            err(EXIT_FAILURE, "unmount out_dir");
+        }
+        if (rmdir("./out_dir") == -1) {
+            err(EXIT_FAILURE, "rmdir");
+        }
+    }
+
+    free(stack);
+    return 0;
 }
 
 
@@ -269,7 +289,6 @@ int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
         err(EXIT_FAILURE, "mkdir");
 
     //on ouvre cgroup.procs en écriture, rajout à la fin du fichier seulement
-    printf("%s\n", proclist_path);
     int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
 
     if (procs_fd == -1) 
@@ -303,13 +322,13 @@ int traitement_opt(int argc, char *argv[]) {
           {"out",         required_argument, 0, 'o'},
         };
         
-      /* getopt_long stores the option index here. */
+      
       int option_index = 0;
 
       c = getopt_long (argc, argv, "hcnp:i:o:",
                        long_options, &option_index);
 
-      /* Detect the end of the options. */
+      
       if (c == -1)
         break;
 
@@ -321,7 +340,7 @@ int traitement_opt(int argc, char *argv[]) {
             break;
 
         case 'c':
-            printf("Cgroup option selected. The container will be placed in the cgrouplocated in /sys/fs/cgroup/light-cont\n");
+            printf("Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
             option_cgroupsv2 = 1;
             break;
 
@@ -378,14 +397,13 @@ int cgroup_manager_child(void *arg) {
     char        **args = arg;
     char        *cgroup_folder_path = args[0];
 
-    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    char *stack = malloc(STACK_SIZE); 
     if (stack == NULL) {
         perror("malloc");
         return 1;
     }
 
     add_to_cgroup(cgroup_folder_path, getpid());
-    printf("Ajouté au cgroup\n");
 
 
     char *child_args[] = { image_loc, NULL };
@@ -419,6 +437,10 @@ int open_image_shell(const char *root_path) {
     return 1;    
 }
 
+int open_image_sh_here() {
+    return open_image_shell("");
+}
+
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
     *flags &= ~flag_to_remove;
 }
@@ -426,7 +448,8 @@ void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
 
 void print_help() {
     printf(
-"======================================= LIGHT-CONT: HELP =======================================\n\n"
+        "\n\n"
+        "======================================= LIGHT-CONT: HELP =======================================\n\n"
         "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
         "Please note that this software is still under development.\n"
         "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
