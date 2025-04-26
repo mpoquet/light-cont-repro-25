@@ -12,6 +12,7 @@ ENGINES: list[str] = ["native", "ctr", "podman", "docker"] #, "crictl"]
 SYSBENCH_ARGS: dict[str, list[str]] = {
         "fileio": ["fileio", "--file-test-mode=seqwr", "--file-num=1"],
         "cpu": ["cpu", "--cpu-max-prime=2000"],
+        "memory": ["memory"],
         }
 
 def print_running_cmd(cmd: list[str]):
