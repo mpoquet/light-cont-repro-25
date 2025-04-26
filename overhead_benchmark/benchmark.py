@@ -1,7 +1,7 @@
 from subprocess import *
 import os
 
-N = 1
+N = 30
 
 FILE_OUT: str = "./data.csv"
 IMAGE: str = "./docker-image-sysbench.tar.gz"
@@ -53,19 +53,11 @@ def main():
             run_cmd = generate_run_cmd(engine, sysbench_args)
             for n in range(1, N + 1):
                 print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
-                print_running_cmd(run_cmd)
-                p1 = Popen(run_cmd, stdout = PIPE)#, stderr = DEVNULL)
+                #print_running_cmd(run_cmd)
+                p1 = Popen(run_cmd, stdout = PIPE, stderr = DEVNULL)
                 parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
                 p2 = Popen(parse_cmd, stdin = p1.stdout, stdout = PIPE)
                 p1.communicate(p2)
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
