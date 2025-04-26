@@ -25,9 +25,11 @@
 #define MAX_PID_LENGTH 20
 #define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 
-int option_cgroupsv2 = 0;
+int opt_cgroupsv2 = 0;
 int opt_in = 0;
 int opt_out = 0;
+int opt_nouserns = 0;
+int path_specified = 0;
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
 
 char image_loc[PATH_MAX];
@@ -52,6 +54,8 @@ int open_image_sh_here();
 
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
 
+int test_dir_access(const char *path);
+
 void print_help();
 
 
@@ -68,6 +72,14 @@ int main(int argc, char *argv[]) {
 
     const char *cgroup_folder_path = CGROUP_PATH;
 
+    if (opt_cgroupsv2 || opt_nouserns) {
+        if (geteuid() != 0) {
+            printf("Need to be superuser to launch with --cgroup or --nouserns option. Try with sudo.\n");
+            exit(EXIT_FAILURE);
+        }
+
+    }
+
 
     //Default image location if none has been specified
     if (!*image_loc) {
@@ -75,19 +87,32 @@ int main(int argc, char *argv[]) {
         snprintf(image_loc, sizeof(image_loc), "%s", ROOTFS);
     }
 
+    
+    //Testing access for specified in and out directories
+    if (opt_in) {
+        if (test_dir_access(in_directory) != 0) {
+            err(EXIT_FAILURE, "Cannot access the specified entry directory");
+        }
+        
+    }
+
+    if (opt_out) {
+        if (test_dir_access(out_directory) != 0) {
+            err(EXIT_FAILURE, "Cannot access the specified output directory");
+        }
+        
+    }
+
     //Making paths to in and out dirs
     snprintf(new_in, sizeof(new_in), "%s%s", image_loc, "/in_dir");
     snprintf(new_out, sizeof(new_out), "%s%s", image_loc, "/out_dir");
 
     //Check if the specified directory actually exists
-    DIR *image_dir = opendir(image_loc);
-    if (image_dir) {
-        closedir(image_dir);
-    } else if (errno == ENOENT) {
-        perror("Path to the directory where the image fs is located does not exist.\n");
-        exit(EXIT_FAILURE);
-    } else {
-        err(EXIT_FAILURE, "\n");
+    int access_test = test_dir_access(image_loc);
+    if (access_test == 1) {
+        err(EXIT_FAILURE,"Path to the directory where the image fs is located does not exist");
+    } else if (access_test == 2) {
+        err(EXIT_FAILURE,"Cannot access the directory");
     }
 
 
@@ -99,11 +124,7 @@ int main(int argc, char *argv[]) {
 
 
     //Check if the user wish to include the container in a cgroup
-    if (option_cgroupsv2 == 1) {
-        if (geteuid() != 0) {
-            printf("Need to be superuser to launch with --cgroups option. Try with sudo.\n");
-            exit(EXIT_FAILURE);
-        }
+    if (opt_cgroupsv2 == 1) {
 
         //Création d'un fils qui se mettra lui même dans un cgroup, permettant à son fils d'y être inscrit d'office
         char *child_args[] = { (char *)cgroup_folder_path, NULL };
@@ -125,8 +146,6 @@ int main(int argc, char *argv[]) {
     }
 
     waitpid(child_pid, NULL, 0);
-
-    printf("Fin du process parent\n");
 
 
     free(stack);
@@ -317,6 +336,7 @@ int traitement_opt(int argc, char *argv[]) {
           {"help",        no_argument,       0, 'h'},
           {"cgroup",      no_argument,       0, 'c'},
           {"network",     no_argument,       0, 'n'},
+          {"nouserns",    no_argument,       0, 'u'},
           {"path",        required_argument, 0, 'p'},
           {"in",          required_argument, 0, 'i'},
           {"out",         required_argument, 0, 'o'},
@@ -325,7 +345,7 @@ int traitement_opt(int argc, char *argv[]) {
       
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hcnp:i:o:",
+      c = getopt_long (argc, argv, "hcnup:i:o:",
                        long_options, &option_index);
 
       
@@ -341,7 +361,7 @@ int traitement_opt(int argc, char *argv[]) {
 
         case 'c':
             printf("Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
-            option_cgroupsv2 = 1;
+            opt_cgroupsv2 = 1;
             break;
 
         case 'n':
@@ -350,8 +370,16 @@ int traitement_opt(int argc, char *argv[]) {
             remove_flag(&clone_flags, CLONE_NEWNET);
             break;
 
+        case 'u':
+            //désactiver user namespace
+            printf("User namespace disabled\n");
+            opt_nouserns =1;
+            remove_flag(&clone_flags, CLONE_NEWUSER);
+            break;
+
         case 'p':
             //changer variable root_path
+            path_specified = 1;
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
             printf("Image directory location: %s\n", optarg);
             break;
@@ -372,10 +400,12 @@ int traitement_opt(int argc, char *argv[]) {
 
         case '?':
             printf("Option not recognized. Please use --help (-h) option to display help text.\n");
+            exit(EXIT_FAILURE);
             break;
 
         default:
-            abort ();
+            printf("\n");
+            //abort ();
         }
     }
 
@@ -414,8 +444,6 @@ int cgroup_manager_child(void *arg) {
         return 1;
     }
 
-    printf("Container PID: %d", child_pid);
-
     waitpid(child_pid, NULL, 0);
 
     return 0;
@@ -445,6 +473,17 @@ void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
     *flags &= ~flag_to_remove;
 }
 
+int test_dir_access(const char *path) {
+    DIR *image_dir = opendir(path);
+    if (image_dir) {
+        closedir(image_dir);
+        return 0;
+    } else if (errno == ENOENT) {
+        return 1;
+    } else {
+        return 2;
+    }
+}
 
 void print_help() {
     printf(
@@ -456,10 +495,11 @@ void print_help() {
         "\nOptions:\n"
         "Display this help message:\t\t\t--help\t\t-h\n"
         "Specify image location (directory):\t\t--path\t\t-p\n"
-        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\n"
-        "Disable Network isolation:\t\t\t--network\t-n\t(not yet implemented)\n"
+        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\tWARNING: Need to be superuser\n"
+        "Disable Network isolation:\t\t\t--network\t-n\n"
         "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
         "Specify an output directory (read-write):\t--out\t\t-o\n"
+        "Disable the use of an user namespace:\t\t--nouserns\t-u\tWARNING: Need to be superuser\n"
     
     );
     exit(EXIT_SUCCESS);
