@@ -23,7 +23,8 @@
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
+//#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC)
 
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
@@ -42,6 +43,8 @@ char new_out[PATH_MAX];
 
 int child(void *arg);
 
+int create_cgroup_dir(const char *cgroup_folder_path);
+
 int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
 int opt_treatment(int argc, char *argv[]);
@@ -52,12 +55,21 @@ int open_image_shell(const char *root_path);
 
 int open_image_sh_here(void *arg);
 
+void add_flag(unsigned long *flags, unsigned long flag_to_add);
+
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
 
 int test_dir_access(const char *path);
 
 void print_help();
 
+pid_t clone3(struct clone_args *args) {
+    pid_t pid = syscall(SYS_clone3, args, sizeof(struct clone_args));
+    if (pid == -1) {
+        err(EXIT_FAILURE,"clone3");
+    }
+    return pid;
+}
 
 static int pivot_root(const char *new_root, const char *put_old)
 {
@@ -66,7 +78,9 @@ static int pivot_root(const char *new_root, const char *put_old)
 
 int main(int argc, char *argv[]) {
 
-    int child_pid;
+    pid_t child_pid;
+
+    int cgroup_fd;
 
     opt_treatment(argc, argv);
 
@@ -122,6 +136,12 @@ int main(int argc, char *argv[]) {
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
+        add_flag(&clone_flags, CLONE_INTO_CGROUP);
+
+        //créer dossier cgroup
+        cgroup_fd = create_cgroup_dir(cgroup_folder_path);
+
+        /*
         //Creating a child who will put itself in a cgroup, so its descedant would be included too
         char *child_args[] = { (char *)cgroup_folder_path, NULL };
         child_pid = clone(cgroup_manager_child, stack + STACK_SIZE, SIGCHLD, child_args);
@@ -131,15 +151,45 @@ int main(int argc, char *argv[]) {
         //note: essayer d'utiliser clone3() à la place de clone?
         char *child_args[] = { image_loc, NULL };
         child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
+
+    */
     }
 
+    /*
     if (child_pid == -1) {
         perror("clone");
         return 1;
     }
+    */
 
-    waitpid(child_pid, NULL, 0);
+    struct clone_args clone3_args = {
+        .flags = clone_flags,
+        .exit_signal = SIGCHLD,
+        .cgroup = cgroup_fd,
+    };
 
+    char *child_args[] = { image_loc, NULL };
+
+    child_pid = clone3(&clone3_args);
+
+    if (child_pid < 0) {
+        perror("clone");
+        return 1;
+    } else if (child_pid == 0) {
+        // Child
+        return child(child_args);
+    } else {
+        // Parent
+        if (opt_cgroupsv2) {
+            printf("Parent: spawned child PID %d in cgroup %s\n", child_pid, cgroup_folder_path);
+        }
+        waitpid(child_pid, NULL, 0);
+    }
+    ///waitpid(child_pid, NULL, 0);
+
+    if (opt_cgroupsv2) {
+        close(cgroup_fd);
+    }
 
     free(stack);
     return 0;
@@ -242,6 +292,7 @@ int child(void *arg)
     }
 
 
+    /*
     //Pour l'instant obligé de refaire un 2eme (ou 3eme) clone()
     //A terme 2 clone() (ou clone3()) max seront suffisant je pense, il faut juste refaire une partie de main() et child()
     //Possiblement, on aura plus besoin de cgroups manager child, avec le flag CLONE_INTO_CGROUP et clone3() ?
@@ -252,6 +303,25 @@ int child(void *arg)
     }
 
     waitpid(child2_pid, NULL, 0);
+    */
+
+    struct clone_args clone3_args = {
+        .exit_signal = SIGCHLD,
+    };
+
+    pid_t child2_pid = clone3(&clone3_args);
+
+    if (child2_pid < 0) {
+        perror("clone");
+        return 1;
+    } else if (child2_pid == 0) {
+        // Child
+        return open_image_sh_here(NULL);
+    } else {
+        // Parent
+        waitpid(child2_pid, NULL, 0);
+    }
+
 
     if (opt_in) {
         if (umount2("./in_dir", MNT_DETACH) == -1) {
@@ -272,6 +342,21 @@ int child(void *arg)
 
     free(stack);
     return 0;
+}
+
+int create_cgroup_dir(const char *cgroup_folder_path) {
+
+    //Creating cgroup directory, if it doesn't already exist
+    if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
+        err(EXIT_FAILURE, "mkdir");
+
+    int cgroup_fd = open(cgroup_folder_path, O_DIRECTORY | O_RDONLY);
+    if (cgroup_fd == -1) {
+        perror("open cgroup dir");
+        return 1;
+    }
+
+    return cgroup_fd;
 }
 
 int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
@@ -443,6 +528,10 @@ int open_image_shell(const char *root_path) {
 
 int open_image_sh_here(void *arg) {
     return open_image_shell("");
+}
+
+void add_flag(unsigned long *flags, unsigned long flag_to_add) {
+    *flags |= flag_to_add;
 }
 
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove) {
