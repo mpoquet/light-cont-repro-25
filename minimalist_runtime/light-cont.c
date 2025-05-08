@@ -44,13 +44,13 @@ int child(void *arg);
 
 int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
-int traitement_opt(int argc, char *argv[]);
+int opt_treatment(int argc, char *argv[]);
 
 int cgroup_manager_child(void *arg);
 
 int open_image_shell(const char *root_path);
 
-int open_image_sh_here();
+int open_image_sh_here(void *arg);
 
 void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
 
@@ -68,10 +68,11 @@ int main(int argc, char *argv[]) {
 
     int child_pid;
 
-    traitement_opt(argc, argv);
+    opt_treatment(argc, argv);
 
     const char *cgroup_folder_path = CGROUP_PATH;
 
+    //Verifying superuser if cgroups or nouserns options selected.
     if (opt_cgroupsv2 || opt_nouserns) {
         if (geteuid() != 0) {
             printf("Need to be superuser to launch with --cgroup or --nouserns option. Try with sudo.\n");
@@ -80,14 +81,12 @@ int main(int argc, char *argv[]) {
 
     }
 
-
     //Default image location if none has been specified
     if (!*image_loc) {
         printf("No image location has been specified. Default: ./rootfs\n");
         snprintf(image_loc, sizeof(image_loc), "%s", ROOTFS);
     }
 
-    
     //Testing access for specified in and out directories
     if (opt_in) {
         if (test_dir_access(in_directory) != 0) {
@@ -95,7 +94,6 @@ int main(int argc, char *argv[]) {
         }
         
     }
-
     if (opt_out) {
         if (test_dir_access(out_directory) != 0) {
             err(EXIT_FAILURE, "Cannot access the specified output directory");
@@ -115,22 +113,18 @@ int main(int argc, char *argv[]) {
         err(EXIT_FAILURE,"Cannot access the directory");
     }
 
-
-    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    char *stack = malloc(STACK_SIZE);
     if (stack == NULL) {
         perror("malloc");
         return 1;
     }
 
-
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
-        //Création d'un fils qui se mettra lui même dans un cgroup, permettant à son fils d'y être inscrit d'office
+        //Creating a child who will put itself in a cgroup, so its descedant would be included too
         char *child_args[] = { (char *)cgroup_folder_path, NULL };
         child_pid = clone(cgroup_manager_child, stack + STACK_SIZE, SIGCHLD, child_args);
-
-
 
     } else {
         
@@ -138,7 +132,6 @@ int main(int argc, char *argv[]) {
         char *child_args[] = { image_loc, NULL };
         child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
     }
-
 
     if (child_pid == -1) {
         perror("clone");
@@ -153,24 +146,19 @@ int main(int argc, char *argv[]) {
     
 }
 
-
 int child(void *arg) 
 {
-
     char        path[PATH_MAX];
     char        **args = arg;
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
-
-    // Changer le hostname (UTS namespace)
-    //affiche nobody à la place
+    //Changer le hostname (UTS namespace)
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
     sethostname("container", 10);
-
-
     
-    
+    //Based on the pivot_root example from man
+
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
         return an error), and prevent propagation of mount
@@ -223,21 +211,16 @@ int child(void *arg)
 
     }
 
-    
-    
     /* Create directory to which old root will be pivoted. */
 
     snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
     if (mkdir(path, 0777) == -1 && errno != EEXIST)
         err(EXIT_FAILURE, "mkdir");
 
-
     /* And pivot the root filesystem. */
-
 
     if (pivot_root(new_root, path) == -1)
         err(EXIT_FAILURE, "pivot_root");
-
 
     /* Switch the current working directory to "/". */
 
@@ -252,12 +235,11 @@ int child(void *arg)
         perror("rmdir");
 
 
-    char *stack = malloc(STACK_SIZE);  //remplacement possible par un appel à mmap (voir example pivot_root)
+    char *stack = malloc(STACK_SIZE);
     if (stack == NULL) {
         perror("malloc");
         return 1;
     }
-
 
 
     //Pour l'instant obligé de refaire un 2eme (ou 3eme) clone()
@@ -292,40 +274,38 @@ int child(void *arg)
     return 0;
 }
 
-
 int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
 
-    char proclist_path[strlen(cgroup_folder_path) + strlen("/cgroup.procs ")]; //14 caractères en plus pour rajouter '/cgroup.procs'
+    //Building path string to the cgroup.procs file
+    char proclist_path[strlen(cgroup_folder_path) + strlen("/cgroup.procs ")]; 
     snprintf(proclist_path, sizeof(proclist_path), "%s%s", cgroup_folder_path, "/cgroup.procs");
 
-    //conversion du pid en string pour pouvoir l'écrire dans le fichier cgroup.procs
+    //Int to string conversion of the pid to write into the cgroup.procs file
     char pid_string[MAX_PID_LENGTH];
     snprintf(pid_string, sizeof(pid_string), "%d", pid);
 
 
-    //création du dossier pour le cgroup, pas grave si il existe déjà
+    //Creating cgroup directory, if it doesn't already exist
     if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
         err(EXIT_FAILURE, "mkdir");
 
-    //on ouvre cgroup.procs en écriture, rajout à la fin du fichier seulement
+    //Opening cgroup.procs in write-only, append mode
     int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
 
     if (procs_fd == -1) 
         err(EXIT_FAILURE, "cgroups - open");
     
-    //on écrit le pid du child dans cgroup.procs pour le rajouter dans le cgroup
+    //Writing specified pid into cgroup.procs
     if (write(procs_fd, pid_string, strlen(pid_string)) == -1)
         err(EXIT_FAILURE, "write");
-
 
     close(procs_fd);
     return 0;
 }
 
+int opt_treatment(int argc, char *argv[]) {
 
-int traitement_opt(int argc, char *argv[]) {
-
-    //voir exemple https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
+    //Based on this example: https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
 
     int c;
 
@@ -342,13 +322,11 @@ int traitement_opt(int argc, char *argv[]) {
           {"out",         required_argument, 0, 'o'},
         };
         
-      
       int option_index = 0;
 
       c = getopt_long (argc, argv, "hcnup:i:o:",
                        long_options, &option_index);
 
-      
       if (c == -1)
         break;
 
@@ -427,14 +405,15 @@ int cgroup_manager_child(void *arg) {
     char        **args = arg;
     char        *cgroup_folder_path = args[0];
 
+    //Allocating space for a stack
     char *stack = malloc(STACK_SIZE); 
     if (stack == NULL) {
         perror("malloc");
         return 1;
     }
 
+    //Adding self to a new cgroup
     add_to_cgroup(cgroup_folder_path, getpid());
-
 
     char *child_args[] = { image_loc, NULL };
     int child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
@@ -447,16 +426,13 @@ int cgroup_manager_child(void *arg) {
     waitpid(child_pid, NULL, 0);
 
     return 0;
-
 }
-
 
 int open_image_shell(const char *root_path) {
 
     char sh_path[PATH_MAX];
 
     snprintf(sh_path, sizeof(sh_path), "%s/bin/sh", root_path);
-
 
     char *argshell[] = {sh_path, NULL};
     execvp(argshell[0], argshell);
@@ -465,7 +441,7 @@ int open_image_shell(const char *root_path) {
     return 1;    
 }
 
-int open_image_sh_here() {
+int open_image_sh_here(void *arg) {
     return open_image_shell("");
 }
 
