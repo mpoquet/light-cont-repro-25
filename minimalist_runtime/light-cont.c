@@ -32,6 +32,7 @@ int opt_nouserns = 0;
 int path_specified = 0;
 int host_uid;
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
+const char *cgroup_folder_path = CGROUP_PATH;
 
 char image_loc[PATH_MAX];
 char in_directory[PATH_MAX];
@@ -85,8 +86,6 @@ int main(int argc, char *argv[]) {
     int cgroup_fd;
 
     opt_treatment(argc, argv);
-
-    const char *cgroup_folder_path = CGROUP_PATH;
 
     host_uid = geteuid();
 
@@ -142,19 +141,11 @@ int main(int argc, char *argv[]) {
         err(EXIT_FAILURE,"Cannot access the directory");
     }
 
-    //Check if the user wish to include the container in a cgroup
-    if (opt_cgroupsv2 == 1) {
-
-        add_flag(&clone_flags, CLONE_INTO_CGROUP);
-
-        //créer dossier cgroup
-        cgroup_fd = create_cgroup_dir(cgroup_folder_path);
-    }
 
     struct clone_args clone3_args = {
         .flags = clone_flags,
         .exit_signal = SIGCHLD,
-        .cgroup = cgroup_fd,
+        //.cgroup = cgroup_fd,
     };
 
     char *child_args[] = { image_loc, NULL };
@@ -169,9 +160,7 @@ int main(int argc, char *argv[]) {
         return child(child_args);
     } else {
         // Parent
-        if (opt_cgroupsv2) {
-            printf("Parent: spawned child PID %d in cgroup %s\n", child_pid, cgroup_folder_path);
-        }
+        
         waitpid(child_pid, NULL, 0);
     }
 
@@ -179,7 +168,7 @@ int main(int argc, char *argv[]) {
         close(cgroup_fd);
     }
 
-    if (host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
+    if (opt_out && host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
         mode_t old_mode = out_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
         if (chmod(out_directory, old_mode) != 0) {
             err(EXIT_FAILURE, "chmod out directory");
@@ -200,7 +189,6 @@ int child(void *arg)
 
     //Mapping UID/GID
     if (host_uid == 0) {
-        printf("Lancé en root - mapping d'UID...\n");
         write_in_file("/proc/self/setgroups", "deny");
 
         write_in_file("/proc/self/uid_map", "0 0 1");
@@ -213,6 +201,16 @@ int child(void *arg)
         
     }
 
+    int cgroup_fd;
+
+    //Check if the user wish to include the container in a cgroup
+    if (opt_cgroupsv2 == 1) {
+
+        clone_flags = CLONE_INTO_CGROUP;
+
+        //créer dossier cgroup
+        cgroup_fd = create_cgroup_dir(cgroup_folder_path);
+    }
 
     //Changer le hostname (UTS namespace)
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
@@ -296,14 +294,10 @@ int child(void *arg)
         perror("rmdir");
 
 
-    char *stack = malloc(STACK_SIZE);
-    if (stack == NULL) {
-        perror("malloc");
-        return 1;
-    }
-
     struct clone_args clone3_args = {
+        .flags = clone_flags,
         .exit_signal = SIGCHLD,
+        .cgroup = cgroup_fd,
     };
 
     pid_t child2_pid = clone3(&clone3_args);
@@ -316,6 +310,9 @@ int child(void *arg)
         return open_image_sh_here(NULL);
     } else {
         // Parent
+        if (opt_cgroupsv2) {
+            printf("The process executing the shell is in cgroup %s\n", cgroup_folder_path);
+        }
         waitpid(child2_pid, NULL, 0);
     }
 
@@ -337,7 +334,6 @@ int child(void *arg)
         }
     }
 
-    free(stack);
     return 0;
 }
 
