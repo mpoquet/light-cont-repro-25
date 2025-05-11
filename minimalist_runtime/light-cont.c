@@ -23,7 +23,6 @@
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
 #define MAX_PID_LENGTH 20
-//#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD)
 #define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC)
 
 int opt_cgroupsv2 = 0;
@@ -31,6 +30,7 @@ int opt_in = 0;
 int opt_out = 0;
 int opt_nouserns = 0;
 int path_specified = 0;
+int host_uid;
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
 
 char image_loc[PATH_MAX];
@@ -61,6 +61,8 @@ void remove_flag(unsigned long *flags, unsigned long flag_to_remove);
 
 int test_dir_access(const char *path);
 
+void write_in_file(const char *path, const char *str);
+
 void print_help();
 
 pid_t clone3(struct clone_args *args) {
@@ -86,9 +88,13 @@ int main(int argc, char *argv[]) {
 
     const char *cgroup_folder_path = CGROUP_PATH;
 
+    host_uid = geteuid();
+
+    struct stat out_dir_stat;
+
     //Verifying superuser if cgroups or nouserns options selected.
     if (opt_cgroupsv2 || opt_nouserns) {
-        if (geteuid() != 0) {
+        if (host_uid != 0) {
             printf("Need to be superuser to launch with --cgroup or --nouserns option. Try with sudo.\n");
             exit(EXIT_FAILURE);
         }
@@ -112,6 +118,15 @@ int main(int argc, char *argv[]) {
         if (test_dir_access(out_directory) != 0) {
             err(EXIT_FAILURE, "Cannot access the specified output directory");
         }
+
+        if (stat(out_directory, &out_dir_stat) != 0) { //getting stats about the directory to get the permissions
+            err(EXIT_FAILURE, "stat out_dir");
+        }
+        if (host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
+            if (chmod(out_directory, 0777) != 0) {
+                err(EXIT_FAILURE, "chmod out directory");
+            }
+        }
         
     }
 
@@ -127,12 +142,6 @@ int main(int argc, char *argv[]) {
         err(EXIT_FAILURE,"Cannot access the directory");
     }
 
-    char *stack = malloc(STACK_SIZE);
-    if (stack == NULL) {
-        perror("malloc");
-        return 1;
-    }
-
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
@@ -140,27 +149,7 @@ int main(int argc, char *argv[]) {
 
         //créer dossier cgroup
         cgroup_fd = create_cgroup_dir(cgroup_folder_path);
-
-        /*
-        //Creating a child who will put itself in a cgroup, so its descedant would be included too
-        char *child_args[] = { (char *)cgroup_folder_path, NULL };
-        child_pid = clone(cgroup_manager_child, stack + STACK_SIZE, SIGCHLD, child_args);
-
-    } else {
-        
-        //note: essayer d'utiliser clone3() à la place de clone?
-        char *child_args[] = { image_loc, NULL };
-        child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
-
-    */
     }
-
-    /*
-    if (child_pid == -1) {
-        perror("clone");
-        return 1;
-    }
-    */
 
     struct clone_args clone3_args = {
         .flags = clone_flags,
@@ -185,13 +174,18 @@ int main(int argc, char *argv[]) {
         }
         waitpid(child_pid, NULL, 0);
     }
-    ///waitpid(child_pid, NULL, 0);
 
     if (opt_cgroupsv2) {
         close(cgroup_fd);
     }
 
-    free(stack);
+    if (host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
+        mode_t old_mode = out_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
+        if (chmod(out_directory, old_mode) != 0) {
+            err(EXIT_FAILURE, "chmod out directory");
+        }
+    }
+
     return 0;
     
 }
@@ -202,6 +196,23 @@ int child(void *arg)
     char        **args = arg;
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
+
+
+    //Mapping UID/GID
+    if (host_uid == 0) {
+        printf("Lancé en root - mapping d'UID...\n");
+        write_in_file("/proc/self/setgroups", "deny");
+
+        write_in_file("/proc/self/uid_map", "0 0 1");
+        write_in_file("/proc/self/gid_map", "0 0 1");
+    } else {
+        char to_write[100];
+        snprintf(to_write, sizeof(to_write), "0 %d 1", host_uid);
+        write_in_file("/proc/self/uid_map", to_write);
+
+        
+    }
+
 
     //Changer le hostname (UTS namespace)
     //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
@@ -250,9 +261,9 @@ int child(void *arg)
         if (mkdir(new_out, 0777) == -1 && errno != EEXIST) {
             err(EXIT_FAILURE, "mkdir new_out");
         }
-        /*if (chmod(new_out, 0777) == -1) {
+        if (chmod(new_out, 0777) == -1) {
             err(EXIT_FAILURE, "chmod out_dir");
-        }*/
+        }
 
         //mounting in read-write, in order to let the container write output files
         if (mount(out_directory, new_out, NULL, MS_BIND, NULL) == -1) {
@@ -290,20 +301,6 @@ int child(void *arg)
         perror("malloc");
         return 1;
     }
-
-
-    /*
-    //Pour l'instant obligé de refaire un 2eme (ou 3eme) clone()
-    //A terme 2 clone() (ou clone3()) max seront suffisant je pense, il faut juste refaire une partie de main() et child()
-    //Possiblement, on aura plus besoin de cgroups manager child, avec le flag CLONE_INTO_CGROUP et clone3() ?
-    pid_t child2_pid = clone(open_image_sh_here, stack + STACK_SIZE, SIGCHLD, NULL);
-
-    if (child2_pid == -1) {
-        err(EXIT_FAILURE,"clone 2");
-    }
-
-    waitpid(child2_pid, NULL, 0);
-    */
 
     struct clone_args clone3_args = {
         .exit_signal = SIGCHLD,
@@ -548,6 +545,20 @@ int test_dir_access(const char *path) {
     } else {
         return 2;
     }
+}
+
+
+void write_in_file(const char *path, const char *str) {
+    int fd = open(path, O_WRONLY);
+    if (fd == -1) { 
+        perror("open"); exit(1); 
+    }
+
+    if (write(fd, str, strlen(str)) == -1) { 
+        perror("write"); exit(1); 
+    }
+
+    close(fd);
 }
 
 void print_help() {
