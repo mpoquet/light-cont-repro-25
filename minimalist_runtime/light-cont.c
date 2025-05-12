@@ -31,6 +31,7 @@ int opt_out = 0;
 int opt_nouserns = 0;
 int path_specified = 0;
 int host_uid;
+int host_gid;
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
 const char *cgroup_folder_path = CGROUP_PATH;
 
@@ -64,6 +65,8 @@ int test_dir_access(const char *path);
 
 void write_in_file(const char *path, const char *str);
 
+void uid_gid_mapping(int host_uid, int host_gid);
+
 void print_help();
 
 pid_t clone3(struct clone_args *args) {
@@ -88,6 +91,8 @@ int main(int argc, char *argv[]) {
     opt_treatment(argc, argv);
 
     host_uid = geteuid();
+
+    host_gid = getgid();
 
     struct stat out_dir_stat;
 
@@ -145,7 +150,6 @@ int main(int argc, char *argv[]) {
     struct clone_args clone3_args = {
         .flags = clone_flags,
         .exit_signal = SIGCHLD,
-        //.cgroup = cgroup_fd,
     };
 
     char *child_args[] = { image_loc, NULL };
@@ -186,35 +190,32 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
+    int cgroup_fd;
+    char *hostname = "container";
 
     //Mapping UID/GID
-    if (host_uid == 0) {
-        write_in_file("/proc/self/setgroups", "deny");
-
-        write_in_file("/proc/self/uid_map", "0 0 1");
-        write_in_file("/proc/self/gid_map", "0 0 1");
-    } else {
-        char to_write[100];
-        snprintf(to_write, sizeof(to_write), "0 %d 1", host_uid);
-        write_in_file("/proc/self/uid_map", to_write);
-
-        
-    }
-
-    int cgroup_fd;
+    uid_gid_mapping(host_uid, host_gid);
+    
+    struct clone_args clone3_args = {
+        .exit_signal = SIGCHLD,
+    };
 
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
         clone_flags = CLONE_INTO_CGROUP;
+        clone3_args.flags = clone_flags,
 
-        //créer dossier cgroup
+        //create cgroup dirrectory
         cgroup_fd = create_cgroup_dir(cgroup_folder_path);
+        clone3_args.cgroup = cgroup_fd;
     }
 
-    //Changer le hostname (UTS namespace)
-    //Changer $PS1? -> env var qui contrôle le prompt string affiché - exple: user@hostname:~/Documents#
-    sethostname("container", 10);
+    char prompt[256];
+    snprintf(prompt, sizeof(prompt), "[%s@%s]>> ", getenv("USER"), hostname);
+    setenv("PS1", prompt, 1);
+
+    sethostname(hostname, strlen(hostname));
     
     //Based on the pivot_root example from man
 
@@ -294,12 +295,6 @@ int child(void *arg)
         perror("rmdir");
 
 
-    struct clone_args clone3_args = {
-        .flags = clone_flags,
-        .exit_signal = SIGCHLD,
-        .cgroup = cgroup_fd,
-    };
-
     pid_t child2_pid = clone3(&clone3_args);
 
     if (child2_pid < 0) {
@@ -332,6 +327,10 @@ int child(void *arg)
         if (rmdir("./out_dir") == -1) {
             err(EXIT_FAILURE, "rmdir");
         }
+    }
+
+    if (opt_cgroupsv2) {
+        close(cgroup_fd);
     }
 
     return 0;
@@ -512,7 +511,7 @@ int open_image_shell(const char *root_path) {
 
     snprintf(sh_path, sizeof(sh_path), "%s/bin/sh", root_path);
 
-    char *argshell[] = {sh_path, NULL};
+    char *argshell[] = {sh_path, "-i", NULL};
     execvp(argshell[0], argshell);
 
     perror("execvp failed");
@@ -555,6 +554,23 @@ void write_in_file(const char *path, const char *str) {
     }
 
     close(fd);
+}
+
+void uid_gid_mapping(int host_uid, int host_gid) {
+    if (host_uid == 0) {
+        write_in_file("/proc/self/setgroups", "deny");
+        write_in_file("/proc/self/uid_map", "0 0 1");
+        write_in_file("/proc/self/gid_map", "0 0 1");
+    } else {
+        char uid_map[100];
+        snprintf(uid_map, sizeof(uid_map), "0 %d 1", host_uid);
+        write_in_file("/proc/self/uid_map", uid_map);
+
+        char gid_map[100];
+        snprintf(gid_map, sizeof(gid_map), "0 %d 1", host_gid);
+        write_in_file("/proc/self/setgroups", "deny");
+        write_in_file("/proc/self/gid_map", gid_map);        
+    }
 }
 
 void print_help() {
