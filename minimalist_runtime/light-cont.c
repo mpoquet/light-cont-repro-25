@@ -30,12 +30,17 @@
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWTIME)
 
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
 int opt_out = 0;
-int opt_nouserns = 0;
+int opt_no_user_ns = 0;
+int opt_no_time_ns = 0;
+int opt_no_cgroup_ns = 0;
+int opt_no_uts_ns = 0;
+int opt_no_pid_ns = 0;
+
 int path_specified = 0;
 int host_uid;
 int host_gid;
@@ -130,9 +135,10 @@ int main(int argc, char *argv[]) {
     host_gid = getgid();
 
     struct stat out_dir_stat;
+    struct stat rootfs_dir_stat;    
 
     //Verifying superuser if cgroups or nouserns options selected.
-    if (opt_cgroupsv2 || opt_nouserns) {
+    if (opt_cgroupsv2 || opt_no_user_ns) {
         if (host_uid != 0) {
             printf("Need to be superuser to launch with --cgroup or --nouserns option. Try with sudo.\n");
             exit(EXIT_FAILURE);
@@ -140,9 +146,36 @@ int main(int argc, char *argv[]) {
 
     }
 
+    
+
     if (!*extract_loc) {
         printf("No extract location has been specified. Default: ./rootfs\n");
         strncpy(extract_loc, DEFAULT_ROOTFS, PATH_MAX);
+    }
+
+    //Chmodding directories if launching in superuser
+    if (host_uid == 0) {
+        if (opt_out) {
+            if (stat(out_directory, &out_dir_stat) != 0) { //getting stats about the directory to get the permissions
+                err(EXIT_FAILURE, "stat out_dir");
+            }
+            if (((out_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
+                if (chmod(out_directory, 0777) != 0) {
+                    err(EXIT_FAILURE, "chmod out directory");
+                }
+            }
+        }
+
+        if (stat(extract_loc, &rootfs_dir_stat) != 0) { //getting stats about the directory to get the permissions
+            err(EXIT_FAILURE, "stat rootfs_dir");
+        }
+        if (((rootfs_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
+            if (chmod(extract_loc, 0777) != 0) {
+                err(EXIT_FAILURE, "chmod extract directory");
+            }
+        }
+
+
     }
 
     //Extracting OCI Image
@@ -157,7 +190,6 @@ int main(int argc, char *argv[]) {
     }
 
 
-
     //Testing access for specified in and out directories
     if (opt_in) {
         if (test_dir_access(in_directory) != 0) {
@@ -169,15 +201,6 @@ int main(int argc, char *argv[]) {
         if (test_dir_access(out_directory) != 0) {
             err(EXIT_FAILURE, "Cannot access the specified output directory");
         }
-
-        if (stat(out_directory, &out_dir_stat) != 0) { //getting stats about the directory to get the permissions
-            err(EXIT_FAILURE, "stat out_dir");
-        }
-        if (host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
-            if (chmod(out_directory, 0777) != 0) {
-                err(EXIT_FAILURE, "chmod out directory");
-            }
-        }
         
     }
 
@@ -185,15 +208,6 @@ int main(int argc, char *argv[]) {
     snprintf(new_in, sizeof(new_in), "%s%s", extract_loc, "/in_dir");
     snprintf(new_out, sizeof(new_out), "%s%s", extract_loc, "/out_dir");
 
-    /*
-    //Check if the specified directory actually exists
-    int access_test = test_dir_access(image_loc);
-    if (access_test == 1) {
-        err(EXIT_FAILURE,"Path to the directory where the image fs is located does not exist");
-    } else if (access_test == 2) {
-        err(EXIT_FAILURE,"Cannot access the directory");
-    }
-    */
 
     struct clone_args clone3_args = {
         .flags = clone_flags,
@@ -220,12 +234,23 @@ int main(int argc, char *argv[]) {
         close(cgroup_fd);
     }
 
-    if (opt_out && host_uid == 0 && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
-        mode_t old_mode = out_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
-        if (chmod(out_directory, old_mode) != 0) {
-            err(EXIT_FAILURE, "chmod out directory");
+
+    if (host_uid == 0) {
+        if (opt_out && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
+            mode_t old_mode = out_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
+            if (chmod(out_directory, old_mode) != 0) {
+                err(EXIT_FAILURE, "chmod out directory");
+            }
+        }
+
+        if (((rootfs_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
+            mode_t old_mode = rootfs_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
+            if (chmod(extract_loc, old_mode) != 0) {
+                err(EXIT_FAILURE, "chmod extract directory");
+            }
         }
     }
+    
 
     return 0;
     
@@ -238,6 +263,7 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
+    unsigned long child2_clone_flags = CLONE_NEWCGROUP;
     int cgroup_fd;
     char *hostname = "container";
 
@@ -251,8 +277,7 @@ int child(void *arg)
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
-        clone_flags = CLONE_INTO_CGROUP;
-        clone3_args.flags = clone_flags,
+        add_flag(&child2_clone_flags, CLONE_INTO_CGROUP);
 
         //create cgroup dirrectory
         cgroup_fd = create_cgroup_dir(cgroup_folder_path);
@@ -260,6 +285,8 @@ int child(void *arg)
             err(EXIT_FAILURE, "open cgroup dir");
         clone3_args.cgroup = cgroup_fd;
     }
+
+    clone3_args.flags = child2_clone_flags;
 
     //Set fancy shell prompt
     char prompt[256];
@@ -326,7 +353,7 @@ int child(void *arg)
 
     snprintf(path, sizeof(path), "%s/%s", new_root, put_old);
     if (mkdir(path, 0777) == -1 && errno != EEXIST)
-        err(EXIT_FAILURE, "mkdir");
+        err(EXIT_FAILURE, "mkdir-oldroot");
 
     /* And pivot the root filesystem. */
 
@@ -391,7 +418,7 @@ int create_cgroup_dir(const char *cgroup_folder_path) {
 
     //Creating cgroup directory, if it doesn't already exist
     if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
-        err(EXIT_FAILURE, "mkdir");
+        err(EXIT_FAILURE, "mkdir-cgroupfolderpath");
 
     int cgroup_fd = open(cgroup_folder_path, O_DIRECTORY | O_RDONLY);
     if (cgroup_fd == -1) {
@@ -414,7 +441,7 @@ int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
 
     //Creating cgroup directory, if it doesn't already exist
     if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
-        err(EXIT_FAILURE, "mkdir");
+        err(EXIT_FAILURE, "mkdir-cgroupfolder");
 
     //Opening cgroup.procs in write-only, append mode
     int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
@@ -478,7 +505,7 @@ int opt_treatment(int argc, char *argv[]) {
         case 'u':
             //désactiver user namespace
             printf("User namespace disabled\n");
-            opt_nouserns =1;
+            opt_no_user_ns =1;
             remove_flag(&clone_flags, CLONE_NEWUSER);
             break;
 
