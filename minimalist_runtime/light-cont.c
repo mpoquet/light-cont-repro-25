@@ -17,6 +17,9 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <getopt.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/capability.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -30,7 +33,7 @@
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWTIME)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC )//| CLONE_NEWTIME)
 
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
@@ -54,6 +57,11 @@ char out_directory[PATH_MAX];
 
 char new_in[PATH_MAX];
 char new_out[PATH_MAX];
+
+struct timens_offset {
+    int clockid;
+    long long offset;
+};
 
 
 int child(void *arg);
@@ -82,6 +90,12 @@ void write_in_file(const char *path, const char *str);
 
 void uid_gid_mapping(int host_uid, int host_gid);
 
+int reset_monotonic_and_boottime_clocks_to_zero();
+
+int configure_clocks();
+
+int elevate_cap_sys_time();
+
 char *read_file(const char *path);
 
 int parse_manifest(const char *json_str, char layers[][PATH_MAX]);
@@ -91,6 +105,27 @@ int extract_tar(const char *layer_path, const char *outdir);
 int extract_oci_image(const char *path_to_image, const char *path_to_extraction);
 
 void print_help();
+
+//FOR DEBUG ONLY
+void print_capabilities() {
+    cap_t caps = cap_get_proc();  // Récupère les capabilités du processus courant
+    if (!caps) {
+        perror("cap_get_proc");
+        exit(EXIT_FAILURE);
+    }
+
+    char *cap_text = cap_to_text(caps, NULL);  // Convertit en chaîne lisible
+    if (!cap_text) {
+        perror("cap_to_text");
+        cap_free(caps);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Capabilités du processus :\n%s\n", cap_text);
+
+    cap_free(cap_text);
+    cap_free(caps);
+}
 
 pid_t clone3(struct clone_args *args) {
     pid_t pid = syscall(SYS_clone3, args, sizeof(struct clone_args));
@@ -208,6 +243,10 @@ int main(int argc, char *argv[]) {
     snprintf(new_in, sizeof(new_in), "%s%s", extract_loc, "/in_dir");
     snprintf(new_out, sizeof(new_out), "%s%s", extract_loc, "/out_dir");
 
+    //DEBUG
+    printf("[DEBUG | PARENT]:\n");
+    print_capabilities();
+
 
     struct clone_args clone3_args = {
         .flags = clone_flags,
@@ -267,12 +306,45 @@ int child(void *arg)
     int cgroup_fd;
     char *hostname = "container";
 
-    //Mapping UID/GID
-    uid_gid_mapping(host_uid, host_gid);
-    
     struct clone_args clone3_args = {
         .exit_signal = SIGCHLD,
     };
+
+    //Mapping UID/GID
+    uid_gid_mapping(host_uid, host_gid);
+
+    /*
+    elevate_cap_sys_time();
+
+    printf("[CHILD]:\n");
+    print_capabilities();
+
+
+    struct timeval time_value;
+    time_value.tv_sec=0;
+    time_value.tv_usec=0;
+
+    if (settimeofday(&time_value, NULL) !=0 ) {
+        //err(EXIT_FAILURE, "settimeofday");
+    }
+    
+    if (!opt_no_time_ns) reset_monotonic_and_boottime_clocks_to_zero();
+
+    if (access("/proc/self/timens_offsets", W_OK) != 0) {
+        perror("pas dans un time namespace");
+    }
+
+    printf("CLOCK_MONOTONIC = %d\n", CLOCK_MONOTONIC);   // doit être 1
+    printf("CLOCK_BOOTTIME = %d\n", CLOCK_BOOTTIME);
+
+    
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("CLOCK_MONOTONIC: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
+
+    clock_gettime(CLOCK_BOOTTIME, &t);
+    printf("CLOCK_BOOTTIME: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
+    */
 
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
@@ -380,6 +452,9 @@ int child(void *arg)
         return 1;
     } else if (child2_pid == 0) {
         // Child
+        printf("[DEBUG | CHILD2]:");
+        print_capabilities();
+        //traitement
         return open_image_sh_here(NULL);
     } else {
         // Parent
@@ -653,6 +728,136 @@ void uid_gid_mapping(int host_uid, int host_gid) {
         write_in_file("/proc/self/gid_map", gid_map);        
     }
 }
+
+int reset_monotonic_and_boottime_clocks_to_zero() {
+    int fd = open("/proc/self/timens_offsets", O_WRONLY);
+    if (fd == -1) {
+        perror("open /proc/self/timens_offsets");
+        return -1;
+    }
+
+    struct timespec now;
+    //struct timens_offset offsets[2];
+    struct timens_offset offset;
+
+    // CLOCK_MONOTONIC
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        close(fd);
+        return -1;
+    }
+    offset.clockid = CLOCK_MONOTONIC;
+    offset.offset = -((long long)now.tv_sec * 1e9 + now.tv_nsec);
+
+    /*
+    // CLOCK_BOOTTIME
+    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
+        perror("clock_gettime(CLOCK_BOOTTIME)");
+        close(fd);
+        return -1;
+    }
+    offsets[1].clockid = CLOCK_BOOTTIME;
+    offsets[1].offset = -((long long)now.tv_sec * 1e9 + now.tv_nsec);
+    */
+
+    offset.offset = -5000000000LL;  // -5s
+    //offsets[1].offset = -5000000000LL;
+
+    printf("offset[0] clockid = %d, offset = %lld\n", offset.clockid, offset.offset);
+    //printf("offset[1] clockid = %d, offset = %lld\n", offsets[1].clockid, offsets[1].offset);
+
+    char *to_write = "monotonic -200 0\nboottime -200 0";
+
+    if (write(fd, to_write, strlen(to_write))) {
+        perror("write timens_offsets");
+        err(EXIT_FAILURE, "write timens offets");
+        close(fd);
+        return -1;
+    }
+    
+
+
+    close(fd);
+    return 0;
+}
+
+int configure_clocks() {
+    int fd = open("/proc/self/timens_offsets", O_WRONLY);
+    if (fd == -1) {
+        perror("open /proc/self/timens_offsets");
+        return -1;
+    }
+
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        close(fd);
+        return -1;
+    }
+    long long offset_monotonic = now.tv_sec;
+
+    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
+        perror("clock_gettime(CLOCK_BOOTTIME)");
+        close(fd);
+        return -1;
+    }
+    long long offset_boottime = now.tv_sec;
+
+    char to_write[100];
+
+    snprintf(to_write, sizeof(to_write), "monotonic %lld 0\nboottime %lld 0", offset_monotonic, offset_boottime);
+
+    if (write(fd, to_write, strlen(to_write))) {
+        perror("write timens_offsets");
+        err(EXIT_FAILURE, "write timens offets");
+        close(fd);
+        return -1;
+    }
+    
+
+
+    close(fd);
+    return 0;
+}
+
+int elevate_cap_sys_time() {
+    cap_t caps;
+    caps = cap_get_proc();  // Obtenir les capabilités actuelles du processus
+
+    if (!caps) {
+        perror("cap_get_proc");
+        return 1;
+    }
+
+    // Ajouter CAP_SYS_TIME dans la set effective et permitted
+    cap_value_t cap_list[] = {CAP_SYS_TIME};
+    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, cap_list, CAP_SET) == -1) {
+        perror("cap_set_flag EFFECTIVE");
+        return 1;
+    }
+
+    if (cap_set_flag(caps, CAP_PERMITTED, 1, cap_list, CAP_SET) == -1) {
+        perror("cap_set_flag PERMITTED");
+        return 1;
+    }
+
+    if (cap_set_proc(caps) == -1) {
+        perror("cap_set_proc");
+        return 1;
+    }
+
+    cap_free(caps);
+
+    printf("CAP_SYS_TIME activée !\n");
+
+    // Exemple : changer l'heure (requiert cette cap)
+    // struct timeval tv = {.tv_sec = 1234567890, .tv_usec = 0};
+    // settimeofday(&tv, NULL);
+
+    return 0;
+}
+
 
 /**
  * Read entire file into memory.

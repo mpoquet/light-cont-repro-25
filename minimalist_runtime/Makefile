@@ -2,7 +2,7 @@ PROG=light-cont
 CC=gcc
 
 $(PROG): rootfs light-cont.c 
-	gcc light-cont.c -o $(PROG) -larchive
+	gcc light-cont.c -o $(PROG) -larchive -lcap
 
 ubuntu_fs.tar:
 	./pull_ubuntufs.sh
