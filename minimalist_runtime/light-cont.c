@@ -33,7 +33,8 @@
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC )//| CLONE_NEWTIME)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC )//| CLONE_NEWTIME)
+#define DEFAULT_SECONDCHILD_NSFLAGS (CLONE_NEWCGROUP | CLONE_NEWPID)
 
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
@@ -43,11 +44,15 @@ int opt_no_time_ns = 0;
 int opt_no_cgroup_ns = 0;
 int opt_no_uts_ns = 0;
 int opt_no_pid_ns = 0;
+int opt_test;
 
 int path_specified = 0;
 int host_uid;
 int host_gid;
+char host_hostname[100];
+
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
+unsigned long child2_clone_flags = DEFAULT_SECONDCHILD_NSFLAGS;
 const char *cgroup_folder_path = CGROUP_PATH;
 
 char image_loc[PATH_MAX];
@@ -105,6 +110,22 @@ int extract_tar(const char *layer_path, const char *outdir);
 int extract_oci_image(const char *path_to_image, const char *path_to_extraction);
 
 void print_help();
+
+void test_child_pid_ns();
+
+void test_child_mount_ns();
+
+void test_child_uts_ns(const char *real_hostname);
+
+void test_child_user_ns();
+
+void test_child_net_ns();
+
+void test_child_ipc_ns();
+
+void test_child_time_ns();
+
+void launch_all_tests();
 
 //FOR DEBUG ONLY
 void print_capabilities() {
@@ -243,10 +264,6 @@ int main(int argc, char *argv[]) {
     snprintf(new_in, sizeof(new_in), "%s%s", extract_loc, "/in_dir");
     snprintf(new_out, sizeof(new_out), "%s%s", extract_loc, "/out_dir");
 
-    //DEBUG
-    printf("[DEBUG | PARENT]:\n");
-    print_capabilities();
-
 
     struct clone_args clone3_args = {
         .flags = clone_flags,
@@ -302,7 +319,10 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
-    unsigned long child2_clone_flags = CLONE_NEWCGROUP;
+    
+    if (opt_no_cgroup_ns) {
+        remove_flag(&child2_clone_flags, CLONE_NEWCGROUP);
+    }
     int cgroup_fd;
     char *hostname = "container";
 
@@ -452,8 +472,11 @@ int child(void *arg)
         return 1;
     } else if (child2_pid == 0) {
         // Child
-        printf("[DEBUG | CHILD2]:");
-        print_capabilities();
+
+        if (opt_test) {
+            launch_all_tests();
+            exit(EXIT_SUCCESS);
+        }
         //traitement
         return open_image_sh_here(NULL);
     } else {
@@ -543,17 +566,23 @@ int opt_treatment(int argc, char *argv[]) {
       static struct option long_options[] =
         {
           {"help",        no_argument,       0, 'h'},
+          {"test",        no_argument,       0, 'l'},
           {"cgroup",      no_argument,       0, 'c'},
           {"network",     no_argument,       0, 'n'},
           {"nouserns",    no_argument,       0, 'u'},
+          {"nocgroupns",  no_argument,       0, 'g'},
+          {"noutsns",     no_argument,       0, 'j'},
+          {"nopidns",     no_argument,       0, 'k'},
+          {"notimens",    no_argument,       0, 't'},
           {"path",        required_argument, 0, 'p'},
           {"in",          required_argument, 0, 'i'},
-          {"out",         required_argument, 0, 'o'},
+          {"out",        required_argument, 0, 'o'},
+          {0,            0,                 0, 0} //sentinel
         };
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hcnup:i:o:",
+      c = getopt_long (argc, argv, "hlcnugjktp:i:o:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -566,43 +595,77 @@ int opt_treatment(int argc, char *argv[]) {
             print_help();
             break;
 
+        case 'l':
+            printf("[CONFIG] Tests will be launched in the container after the end of the configuration\n");
+            gethostname(host_hostname, 100);
+            opt_test = 1;
+            break;
+
         case 'c':
-            printf("Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
+            printf("[CONFIG] Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
             opt_cgroupsv2 = 1;
             break;
 
         case 'n':
             //désactiver isolation network
-            printf("Network isolation disabled\n");
+            printf("[CONFIG] Network isolation disabled\n");
             remove_flag(&clone_flags, CLONE_NEWNET);
             break;
 
         case 'u':
             //désactiver user namespace
-            printf("User namespace disabled\n");
-            opt_no_user_ns =1;
+            printf("[CONFIG] User namespace disabled\n");
+            opt_no_user_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWUSER);
+            break;
+
+        case 'g':
+            //disable cgroup namespace
+            printf("[CONFIG] Cgroup namespace disbaled\n");
+            opt_no_cgroup_ns = 1;
+            remove_flag(&child2_clone_flags, CLONE_NEWCGROUP);
+            break;
+
+        case 'j':
+            //disable UTS namespace
+            printf("[CONFIG] UTS namespace disabled\n");
+            opt_no_uts_ns = 1;
+            remove_flag(&clone_flags, CLONE_NEWUTS);
+            break;
+
+        case 'k':
+            //disable PID namespace
+            printf("[CONFIG] PID namespace disabled\n");
+            opt_no_pid_ns = 1;
+            remove_flag(&child2_clone_flags, CLONE_NEWPID);
+            break;
+        
+        case 't':
+            //disable Time namespace
+            printf("[CONFIG] Time namespace disabled\n");
+            opt_no_time_ns = 1;
+            remove_flag(&clone_flags, CLONE_NEWTIME);
             break;
 
         case 'p':
             //changer variable root_path
             path_specified = 1;
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
-            printf("Image directory location: %s\n", optarg);
+            printf("[CONFIG] Image directory location: %s\n", optarg);
             break;
 
         case 'i':
             //rep d'entrée à monter en rd-only
             snprintf(in_directory, sizeof(in_directory), "%s", optarg);
             opt_in = 1;
-            printf("Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
+            printf("[CONFIG] Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
             break;
 
         case 'o':
             //rep de sortie à monter en rd-wr
             snprintf(out_directory, sizeof(out_directory), "%s", optarg);
             opt_out = 1;
-            printf("Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
+            printf("[CONFIG] Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
             break;
 
         case '?':
@@ -611,7 +674,7 @@ int opt_treatment(int argc, char *argv[]) {
             break;
 
         default:
-            printf("\n");
+            err(EXIT_FAILURE, "Unexpected error in option parsing.\n");
             //abort ();
         }
     }
@@ -962,7 +1025,7 @@ int extract_tar(const char *layer_path, const char *outdir) {
             const char *link_target = archive_entry_hardlink(entry);
             if (link_target) {
                 // C'est un hard link, on ignore l'erreur pour éviter les warnings non bloquants
-                fprintf(stderr, "Warning: skipping unresolved hard link to %s\n", link_target);
+                fprintf(stderr, "[OCI EXTRACTION] Warning: skipping unresolved hard link to %s\n", link_target);
 
                 continue;
             } else {
@@ -1076,7 +1139,7 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
             if (using_temp_dir) remove_dir_recursive(real_image_path);
             return 1;
         }
-        printf("Extracted layer: %s\n", layers[i]);
+        printf("[OCI EXTRACTION] Extracted layer: %s\n", layers[i]);
     }
 
     if (using_temp_dir) {
@@ -1104,4 +1167,77 @@ void print_help() {
     
     );
     exit(EXIT_SUCCESS);
+}
+
+
+void test_child_pid_ns() {
+    printf("\n==========[TEST: PID isolation]==========\n\n");
+    if (opt_no_pid_ns) {
+        printf("[TEST] [CHILD]: My PID should not be 1\n");
+    } else {
+        printf("[TEST] [CHILD]: My PID should be 1\n");
+    }
+
+    printf("[TEST] [CHILD]: My actual PID: %d\n\n", getpid());
+}
+
+void test_child_mount_ns();
+
+void test_child_uts_ns(const char *real_hostname) {
+    printf("\n==========[TEST: Hostname and Domainname isolation]==========\n\n");
+    if (opt_no_uts_ns) {
+        printf("[TEST] [CHILD]: My hostname should be the same as my father's\n");
+    } else {
+        printf("[TEST] [CHILD]: My hostname should not be the same as my father's\n");
+    }
+
+    char my_hostname[100];
+    if (gethostname(my_hostname, 100) != 0) {
+        err(EXIT_FAILURE, "gethostname");
+    }
+    printf("[TEST] [CHILD]: My hostname: %s\tMy father's hostname: %s\n\n", my_hostname, real_hostname);
+}
+
+void test_child_user_ns() {
+    printf("\n==========[TEST: User isolation]==========\n\n");
+    if (host_uid == 0) {
+        printf("[TEST] [CHILD]: Both my UID and GID should be 0, because the runtime was launched by a privileged user\n");
+    } else {
+        if (opt_no_user_ns) {
+            printf("[TEST] [CHILD]: Both my UID and GID should not be 0\n");
+        } else {
+            printf("[TEST] [CHILD]: Both my UID and GID should be 0\n");
+        }
+    }
+
+    printf("[TEST] [CHILD]: My actual UID: %d\tMy actual GID: %d\n\n", geteuid(), getgid());
+}
+
+void test_child_net_ns();
+
+void test_child_ipc_ns();
+
+void test_child_time_ns();
+
+void launch_all_tests() {
+    test_child_pid_ns();
+
+    test_child_user_ns();
+
+    test_child_uts_ns(host_hostname);
+
+    //not implemented yet
+    //test_child_mount_ns();
+
+    //not implemented yet
+    //test_child_ipc_ns();
+
+    //not implemented yet
+    //test_child_net_ns();
+
+    //not implemented yet
+    //test_child_time_ns();
+
+
+    printf("\n==========[ALL TESTS HAVE TERMINATED]==========\n");
 }
