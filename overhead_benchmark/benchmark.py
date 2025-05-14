@@ -9,11 +9,32 @@ IMAGE_NAME = "sysbench:tp"
 ENGINES: list[str] = ["native", "ctr", "podman", "docker"] #, "crictl"]
 # TODO ajouter CRI-O
 
+# ChatGPT
 SYSBENCH_ARGS: dict[str, list[str]] = {
-        "fileio": ["fileio", "--file-test-mode=seqwr", "--file-num=1"],
-        "cpu": ["cpu", "--cpu-max-prime=2000"],
-        "memory": ["memory"],
-        }
+    "fileio": [
+        "fileio",
+        "--file-test-mode=rndrw",  # Mixed random read/write
+        "--file-total-size=2G",    # Explicit size
+        "--file-num=4",            # Multiple files
+        "--file-extra-flags=direct",  # Bypass cache
+        "--file-fsync-freq=100",   # Realistic fsync frequency
+        "--file-rw-ratio=4"       # 4:1 read:write ratio
+    ],
+    "cpu": [
+        "cpu",
+        "--cpu-max-prime=100000",  # More demanding workload
+        "--threads=4",             # Multi-threaded
+        "--time=30"                # Fixed duration
+    ],
+    "memory": [
+        "memory",
+        "--memory-block-size=4K",   # Common page size
+        "--memory-total-size=20G",  # Large enough to exceed cache
+        "--memory-oper=write",      # Or mixed with --memory-access-mode=rnd
+        "--memory-scope=global",    # Test full system memory bandwidth
+        "--threads=4"              # Multi-threaded
+    ]
+}
 
 def print_running_cmd(cmd: list[str]):
     cmd_joined:str = " ".join(cmd)
