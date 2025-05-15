@@ -1292,14 +1292,21 @@ void print_help() {
         "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
         "Please note that this software is still under development.\n"
         "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
+        "Note: time namespace is set by default but time isolation is not complete\n"
         "\nOptions:\n"
         "Display this help message:\t\t\t--help\t\t-h\n"
-        "Specify image location (directory):\t\t--path\t\t-p\n"
+        "Specify OCI image location:\t\t--path\t\t-p\n"
+        "Specify extract location for the image:\t--extractpath\t-e\n"
         "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\tWARNING: Need to be superuser\n"
         "Disable Network isolation:\t\t\t--network\t-n\n"
         "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
         "Specify an output directory (read-write):\t--out\t\t-o\n"
         "Disable the use of an user namespace:\t\t--nouserns\t-u\tWARNING: Need to be superuser\n"
+        "Disable the use of a PID namespace:\t\t--nopidns\t-k\n"
+        "Disable the use of a cgroup namespace:\t\t--nocgroupns\t-g\n"
+        "Disable the use of a UTS namespace:\t\t--noutsns\t-j\n"
+        "Disable the use of a time namespace:\t\t--notimens\t-t\n"
+        "Launch embedded tests\t\t\t--test\t-l\n"
     
     );
     exit(EXIT_SUCCESS);
