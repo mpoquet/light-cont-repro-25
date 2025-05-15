@@ -5,8 +5,10 @@ N = 30
 
 FILE_OUT: str = "./data.csv"
 IMAGE: str = "./docker-image-sysbench.tar.gz"
+IMAGE_OCI: str = "./sysbench.oci.tar"
+IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["native", "ctr", "podman", "docker"] #, "crictl"]
+ENGINES: list[str] = ["light-cont", "native", "ctr", "podman", "docker"] #, "crictl"]
 # TODO ajouter CRI-O
 
 # ChatGPT
@@ -47,6 +49,11 @@ def generate_load_cmd(engine: str) -> list[str]:
         return [engine, "load", "-i", IMAGE]
     if engine == "crictl":
         return [engine, "load", IMAGE]
+    if engine == "light-cont":
+        return ["../minimalist_runtime/light-cont", "--path", "../overhead_benchmark/sysbench.oci.tar", "--extractpath ./sysbench-rootfs", "--run \"nothing\""]
+        #ne fonctionne pas pour l'ins
+        #la commande nothing ne va pas être trouvé dans le fs donc light-cont va extraire l'image dans sysbench-rootfs et se terminer en renvoyant une erreur
+        #pas encore implémenté le fait de pouvoir extract une image sans rien lancer dessus
     return None
 
 def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
@@ -58,6 +65,10 @@ def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
         return [engine, "exec", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
     if engine == "native":
         return ["sysbench"] + sysbench_args + ["run"]
+    if engine == "light-cont":
+        sysbench_cmd = ["\"/bin/sysbench"] + sysbench_args + ["\"" ]
+        print("sysbench_cmd = {}".format(sysbench_cmd))
+        return ["../minimalist_runtime/light-cont", "--extracted", "--path ./sysbench-rootfs", "--run "] + sysbench_cmd + ["run"]
     return None
 
 
@@ -65,7 +76,7 @@ def main():
 
 
     for engine in ENGINES:
-        if engine != "native":
+        if engine != "native" and engine != "light-cont":
             print("Loading image for {}...".format(engine))
             load_cmd = generate_load_cmd(engine)
             print_running_cmd(load_cmd)
@@ -76,10 +87,11 @@ def main():
         for mode in SYSBENCH_ARGS:
             sysbench_args: list[str] = SYSBENCH_ARGS[mode]
             run_cmd = generate_run_cmd(engine, sysbench_args)
+            #print("DEBUG: run_cmd = ", run_cmd)
             for n in range(1, N + 1):
                 print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
                 #print_running_cmd(run_cmd)
-                p1 = Popen(run_cmd, stdout=PIPE, stderr=DEVNULL)
+                p1 = Popen(run_cmd, stdout=PIPE, stderr=PIPE)
                 parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
                 p2 = Popen(parse_cmd, stdin=p1.stdout, stdout=PIPE)
                 p1.stdout.close()   # Très important
