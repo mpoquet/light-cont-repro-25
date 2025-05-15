@@ -579,6 +579,7 @@ int opt_treatment(int argc, char *argv[]) {
           {"nopidns",     no_argument,       0, 'k'},
           {"notimens",    no_argument,       0, 't'},
           {"path",        required_argument, 0, 'p'},
+          {"exctractpath", required_argument, 0, 'e'},
           {"in",          required_argument, 0, 'i'},
           {"out",        required_argument, 0, 'o'},
           {0,            0,                 0, 0} //sentinel
@@ -586,7 +587,7 @@ int opt_treatment(int argc, char *argv[]) {
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hlcnugjktp:i:o:",
+      c = getopt_long (argc, argv, "hlcnugjktp:e:i:o:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -655,7 +656,12 @@ int opt_treatment(int argc, char *argv[]) {
             //changer variable root_path
             path_specified = 1;
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
-            printf("[CONFIG] Image directory location: %s\n", optarg);
+            printf("[CONFIG] OCI Image location: %s\n", optarg);
+            break;
+
+        case 'e':
+            snprintf(extract_loc, sizeof(extract_loc), "%s", optarg);
+            printf("[CONFIG] Extracted image location: %s\n", optarg);
             break;
 
         case 'i':
@@ -1365,16 +1371,16 @@ void launch_all_tests() {
     test_child_uts_ns(host_hostname);
 
     //not implemented yet
-    //test_child_mount_ns();
+    test_child_mount_ns();
 
     //not implemented yet
-    //test_child_ipc_ns();
+    test_child_ipc_ns();
 
     //not implemented yet
-    //test_child_net_ns();
+    test_child_net_ns();
 
     //not implemented yet
-    //test_child_time_ns();
+    test_child_time_ns();
 
 
     printf("\n==========[ALL TESTS HAVE TERMINATED]==========\n");
