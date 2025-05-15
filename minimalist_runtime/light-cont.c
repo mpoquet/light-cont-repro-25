@@ -17,6 +17,9 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <getopt.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/capability.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -30,7 +33,8 @@
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWTIME)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC )//| CLONE_NEWTIME)
+#define DEFAULT_SECONDCHILD_NSFLAGS (CLONE_NEWCGROUP | CLONE_NEWPID)
 
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
@@ -40,11 +44,15 @@ int opt_no_time_ns = 0;
 int opt_no_cgroup_ns = 0;
 int opt_no_uts_ns = 0;
 int opt_no_pid_ns = 0;
+int opt_test;
 
 int path_specified = 0;
 int host_uid;
 int host_gid;
+char host_hostname[100];
+
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
+unsigned long child2_clone_flags = DEFAULT_SECONDCHILD_NSFLAGS;
 const char *cgroup_folder_path = CGROUP_PATH;
 
 char image_loc[PATH_MAX];
@@ -54,6 +62,11 @@ char out_directory[PATH_MAX];
 
 char new_in[PATH_MAX];
 char new_out[PATH_MAX];
+
+struct timens_offset {
+    int clockid;
+    long long offset;
+};
 
 
 int child(void *arg);
@@ -82,15 +95,62 @@ void write_in_file(const char *path, const char *str);
 
 void uid_gid_mapping(int host_uid, int host_gid);
 
+int reset_monotonic_and_boottime_clocks_to_zero();
+
+int configure_clocks();
+
+int elevate_cap_sys_time();
+
 char *read_file(const char *path);
 
 int parse_manifest(const char *json_str, char layers[][PATH_MAX]);
+
+int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image);
+
+int parse_index(const char *json_str, char manifests[][PATH_MAX], const char *path_to_image);
 
 int extract_tar(const char *layer_path, const char *outdir);
 
 int extract_oci_image(const char *path_to_image, const char *path_to_extraction);
 
 void print_help();
+
+void test_child_pid_ns();
+
+void test_child_mount_ns();
+
+void test_child_uts_ns(const char *real_hostname);
+
+void test_child_user_ns();
+
+void test_child_net_ns();
+
+void test_child_ipc_ns();
+
+void test_child_time_ns();
+
+void launch_all_tests();
+
+//FOR DEBUG ONLY
+void print_capabilities() {
+    cap_t caps = cap_get_proc();  // Récupère les capabilités du processus courant
+    if (!caps) {
+        perror("cap_get_proc");
+        exit(EXIT_FAILURE);
+    }
+
+    char *cap_text = cap_to_text(caps, NULL);  // Convertit en chaîne lisible
+    if (!cap_text) {
+        perror("cap_to_text");
+        cap_free(caps);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Capabilités du processus :\n%s\n", cap_text);
+
+    cap_free(cap_text);
+    cap_free(caps);
+}
 
 pid_t clone3(struct clone_args *args) {
     pid_t pid = syscall(SYS_clone3, args, sizeof(struct clone_args));
@@ -115,7 +175,7 @@ int test_extract_oci() {
         err(EXIT_FAILURE, "mkdir temp-rootfs/rootfs");
     }*/
 
-    if (extract_oci_image("./temp-rootfs/ubuntu.tar", "./temp-rootfs/rootfs") != 0) {
+    if (extract_oci_image("./images-test/debian_bookworm-slim.oci.tar", "./temp-rootfs/rootfs") != 0) {
         err(EXIT_FAILURE, "oci extraction");
     }
 
@@ -263,16 +323,52 @@ int child(void *arg)
     char        *new_root = args[0];
     const char  *put_old = "/oldrootfs";
 
-    unsigned long child2_clone_flags = CLONE_NEWCGROUP;
+    
+    if (opt_no_cgroup_ns) {
+        remove_flag(&child2_clone_flags, CLONE_NEWCGROUP);
+    }
     int cgroup_fd;
     char *hostname = "container";
 
-    //Mapping UID/GID
-    uid_gid_mapping(host_uid, host_gid);
-    
     struct clone_args clone3_args = {
         .exit_signal = SIGCHLD,
     };
+
+    //Mapping UID/GID
+    uid_gid_mapping(host_uid, host_gid);
+
+    /*
+    elevate_cap_sys_time();
+
+    printf("[CHILD]:\n");
+    print_capabilities();
+
+
+    struct timeval time_value;
+    time_value.tv_sec=0;
+    time_value.tv_usec=0;
+
+    if (settimeofday(&time_value, NULL) !=0 ) {
+        //err(EXIT_FAILURE, "settimeofday");
+    }
+    
+    if (!opt_no_time_ns) reset_monotonic_and_boottime_clocks_to_zero();
+
+    if (access("/proc/self/timens_offsets", W_OK) != 0) {
+        perror("pas dans un time namespace");
+    }
+
+    printf("CLOCK_MONOTONIC = %d\n", CLOCK_MONOTONIC);   // doit être 1
+    printf("CLOCK_BOOTTIME = %d\n", CLOCK_BOOTTIME);
+
+    
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    printf("CLOCK_MONOTONIC: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
+
+    clock_gettime(CLOCK_BOOTTIME, &t);
+    printf("CLOCK_BOOTTIME: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
+    */
 
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
@@ -380,6 +476,12 @@ int child(void *arg)
         return 1;
     } else if (child2_pid == 0) {
         // Child
+
+        if (opt_test) {
+            launch_all_tests();
+            exit(EXIT_SUCCESS);
+        }
+        //traitement
         return open_image_sh_here(NULL);
     } else {
         // Parent
@@ -468,17 +570,24 @@ int opt_treatment(int argc, char *argv[]) {
       static struct option long_options[] =
         {
           {"help",        no_argument,       0, 'h'},
+          {"test",        no_argument,       0, 'l'},
           {"cgroup",      no_argument,       0, 'c'},
           {"network",     no_argument,       0, 'n'},
           {"nouserns",    no_argument,       0, 'u'},
+          {"nocgroupns",  no_argument,       0, 'g'},
+          {"noutsns",     no_argument,       0, 'j'},
+          {"nopidns",     no_argument,       0, 'k'},
+          {"notimens",    no_argument,       0, 't'},
           {"path",        required_argument, 0, 'p'},
+          {"exctractpath", required_argument, 0, 'e'},
           {"in",          required_argument, 0, 'i'},
-          {"out",         required_argument, 0, 'o'},
+          {"out",        required_argument, 0, 'o'},
+          {0,            0,                 0, 0} //sentinel
         };
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hcnup:i:o:",
+      c = getopt_long (argc, argv, "hlcnugjktp:e:i:o:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -491,43 +600,82 @@ int opt_treatment(int argc, char *argv[]) {
             print_help();
             break;
 
+        case 'l':
+            printf("[CONFIG] Tests will be launched in the container after the end of the configuration\n");
+            gethostname(host_hostname, 100);
+            opt_test = 1;
+            break;
+
         case 'c':
-            printf("Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
+            printf("[CONFIG] Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
             opt_cgroupsv2 = 1;
             break;
 
         case 'n':
             //désactiver isolation network
-            printf("Network isolation disabled\n");
+            printf("[CONFIG] Network isolation disabled\n");
             remove_flag(&clone_flags, CLONE_NEWNET);
             break;
 
         case 'u':
             //désactiver user namespace
-            printf("User namespace disabled\n");
-            opt_no_user_ns =1;
+            printf("[CONFIG] User namespace disabled\n");
+            opt_no_user_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWUSER);
+            break;
+
+        case 'g':
+            //disable cgroup namespace
+            printf("[CONFIG] Cgroup namespace disbaled\n");
+            opt_no_cgroup_ns = 1;
+            remove_flag(&child2_clone_flags, CLONE_NEWCGROUP);
+            break;
+
+        case 'j':
+            //disable UTS namespace
+            printf("[CONFIG] UTS namespace disabled\n");
+            opt_no_uts_ns = 1;
+            remove_flag(&clone_flags, CLONE_NEWUTS);
+            break;
+
+        case 'k':
+            //disable PID namespace
+            printf("[CONFIG] PID namespace disabled\n");
+            opt_no_pid_ns = 1;
+            remove_flag(&child2_clone_flags, CLONE_NEWPID);
+            break;
+        
+        case 't':
+            //disable Time namespace
+            printf("[CONFIG] Time namespace disabled\n");
+            opt_no_time_ns = 1;
+            remove_flag(&clone_flags, CLONE_NEWTIME);
             break;
 
         case 'p':
             //changer variable root_path
             path_specified = 1;
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
-            printf("Image directory location: %s\n", optarg);
+            printf("[CONFIG] OCI Image location: %s\n", optarg);
+            break;
+
+        case 'e':
+            snprintf(extract_loc, sizeof(extract_loc), "%s", optarg);
+            printf("[CONFIG] Extracted image location: %s\n", optarg);
             break;
 
         case 'i':
             //rep d'entrée à monter en rd-only
             snprintf(in_directory, sizeof(in_directory), "%s", optarg);
             opt_in = 1;
-            printf("Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
+            printf("[CONFIG] Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
             break;
 
         case 'o':
             //rep de sortie à monter en rd-wr
             snprintf(out_directory, sizeof(out_directory), "%s", optarg);
             opt_out = 1;
-            printf("Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
+            printf("[CONFIG] Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
             break;
 
         case '?':
@@ -536,7 +684,7 @@ int opt_treatment(int argc, char *argv[]) {
             break;
 
         default:
-            printf("\n");
+            err(EXIT_FAILURE, "Unexpected error in option parsing.\n");
             //abort ();
         }
     }
@@ -654,11 +802,142 @@ void uid_gid_mapping(int host_uid, int host_gid) {
     }
 }
 
+int reset_monotonic_and_boottime_clocks_to_zero() {
+    int fd = open("/proc/self/timens_offsets", O_WRONLY);
+    if (fd == -1) {
+        perror("open /proc/self/timens_offsets");
+        return -1;
+    }
+
+    struct timespec now;
+    //struct timens_offset offsets[2];
+    struct timens_offset offset;
+
+    // CLOCK_MONOTONIC
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        close(fd);
+        return -1;
+    }
+    offset.clockid = CLOCK_MONOTONIC;
+    offset.offset = -((long long)now.tv_sec * 1e9 + now.tv_nsec);
+
+    /*
+    // CLOCK_BOOTTIME
+    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
+        perror("clock_gettime(CLOCK_BOOTTIME)");
+        close(fd);
+        return -1;
+    }
+    offsets[1].clockid = CLOCK_BOOTTIME;
+    offsets[1].offset = -((long long)now.tv_sec * 1e9 + now.tv_nsec);
+    */
+
+    offset.offset = -5000000000LL;  // -5s
+    //offsets[1].offset = -5000000000LL;
+
+    printf("offset[0] clockid = %d, offset = %lld\n", offset.clockid, offset.offset);
+    //printf("offset[1] clockid = %d, offset = %lld\n", offsets[1].clockid, offsets[1].offset);
+
+    char *to_write = "monotonic -200 0\nboottime -200 0";
+
+    if (write(fd, to_write, strlen(to_write))) {
+        perror("write timens_offsets");
+        err(EXIT_FAILURE, "write timens offets");
+        close(fd);
+        return -1;
+    }
+    
+
+
+    close(fd);
+    return 0;
+}
+
+int configure_clocks() {
+    int fd = open("/proc/self/timens_offsets", O_WRONLY);
+    if (fd == -1) {
+        perror("open /proc/self/timens_offsets");
+        return -1;
+    }
+
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        close(fd);
+        return -1;
+    }
+    long long offset_monotonic = now.tv_sec;
+
+    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
+        perror("clock_gettime(CLOCK_BOOTTIME)");
+        close(fd);
+        return -1;
+    }
+    long long offset_boottime = now.tv_sec;
+
+    char to_write[100];
+
+    snprintf(to_write, sizeof(to_write), "monotonic %lld 0\nboottime %lld 0", offset_monotonic, offset_boottime);
+
+    if (write(fd, to_write, strlen(to_write))) {
+        perror("write timens_offsets");
+        err(EXIT_FAILURE, "write timens offets");
+        close(fd);
+        return -1;
+    }
+    
+
+
+    close(fd);
+    return 0;
+}
+
+int elevate_cap_sys_time() {
+    cap_t caps;
+    caps = cap_get_proc();  // Obtenir les capabilités actuelles du processus
+
+    if (!caps) {
+        perror("cap_get_proc");
+        return 1;
+    }
+
+    // Ajouter CAP_SYS_TIME dans la set effective et permitted
+    cap_value_t cap_list[] = {CAP_SYS_TIME};
+    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, cap_list, CAP_SET) == -1) {
+        perror("cap_set_flag EFFECTIVE");
+        return 1;
+    }
+
+    if (cap_set_flag(caps, CAP_PERMITTED, 1, cap_list, CAP_SET) == -1) {
+        perror("cap_set_flag PERMITTED");
+        return 1;
+    }
+
+    if (cap_set_proc(caps) == -1) {
+        perror("cap_set_proc");
+        return 1;
+    }
+
+    cap_free(caps);
+
+    printf("CAP_SYS_TIME activée !\n");
+
+    // Exemple : changer l'heure (requiert cette cap)
+    // struct timeval tv = {.tv_sec = 1234567890, .tv_usec = 0};
+    // settimeofday(&tv, NULL);
+
+    return 0;
+}
+
+
 /**
  * Read entire file into memory.
  */
  char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
+    printf("[DEBUG] fopen: %s\n", path);
     if (!f) {
         perror("fopen");
         return NULL;
@@ -683,9 +962,7 @@ void uid_gid_mapping(int host_uid, int host_gid) {
     return buf;
 }
 
-/**
- * Parse manifest.json, extract layer paths into layers[]. Returns count or -1.
- */
+//Parse Docker Manifest. Not used here.
 int parse_manifest(const char *json_str, char layers[][PATH_MAX]) {
     jsmn_parser parser;
     jsmntok_t tokens[1024];
@@ -719,6 +996,122 @@ int parse_manifest(const char *json_str, char layers[][PATH_MAX]) {
         }
     }
     fprintf(stderr, "No Layers array found in manifest.json\n");
+    return -1;
+}
+
+int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image) {
+    jsmn_parser parser;
+    jsmntok_t tokens[1024];
+    jsmn_init(&parser);
+
+    int ret = jsmn_parse(&parser, json_str, strlen(json_str),
+                         tokens, sizeof(tokens)/sizeof(tokens[0]));
+    if (ret < 0) {
+        fprintf(stderr, "Failed to parse manifest OCI JSON: %d\n", ret);
+        return -1;
+    }
+
+    int tokcount = ret;
+
+    for (int i = 1; i < tokcount; i++) {
+        if (tokens[i].type == JSMN_STRING &&
+            tokens[i+1].type == JSMN_ARRAY &&
+            (int)(tokens[i].end - tokens[i].start) == 6 &&
+            strncmp(json_str + tokens[i].start, "layers", 6) == 0) {
+
+            int arr_size = tokens[i+1].size;
+            int idx = i + 2;
+            int count = 0;
+
+            for (int j = 0; j < arr_size && count < MAX_LAYERS; j++) {
+                int obj_end = tokens[idx].end;
+
+                for (int k = 0; idx + k < tokcount && tokens[idx + k].start < obj_end; k++) {
+                    if (tokens[idx + k].type == JSMN_STRING &&
+                        (int)(tokens[idx + k].end - tokens[idx + k].start) == 6 &&
+                        strncmp(json_str + tokens[idx + k].start, "digest", 6) == 0) {
+
+                        jsmntok_t *val = &tokens[idx + k + 1];
+                        int len = val->end - val->start;
+
+                        if (len < 7 || strncmp(json_str + val->start, "sha256:", 7) != 0) {
+                            fprintf(stderr, "Unexpected digest format\n");
+                            return -1;
+                        }
+
+                        // Format final : <path_to_image>/blobs/sha256/<digest>
+                        snprintf(digests[count], PATH_MAX, "/blobs/sha256/%.*s",
+                                len - 7, json_str + val->start + 7);
+                        digests[count][PATH_MAX - 1] = '\0';
+
+                        printf("[DEBUG]: layer: %s\n", digests[count]);
+
+                        count++;
+                        break;
+                    }
+                }
+
+                idx++;
+            }
+
+            return count;
+        }
+    }
+
+    fprintf(stderr, "No layers array found in manifest OCI\n");
+    return -1;
+}
+
+
+int parse_index(const char *json_str, char manifests[][PATH_MAX], const char *path_to_image) {
+    jsmn_parser parser;
+    jsmntok_t tokens[1024];
+    jsmn_init(&parser);
+    int ret = jsmn_parse(&parser, json_str, strlen(json_str), tokens, sizeof(tokens)/sizeof(tokens[0]));
+    if (ret < 0) {
+        fprintf(stderr, "Failed to parse index.json: %d\n", ret);
+        return -1;
+    }
+
+    int tokcount = ret;
+
+    for (int i = 1; i < tokcount; i++) {
+        if (tokens[i].type == JSMN_STRING &&
+            tokens[i+1].type == JSMN_ARRAY &&
+            (int)tokens[i].end - tokens[i].start == 9 &&
+            strncmp(json_str + tokens[i].start, "manifests", 9) == 0) {
+
+            int arr_size = tokens[i+1].size;
+            int idx = i + 2;
+            int count = 0;
+
+            for (int j = 0; j < arr_size && count < MAX_LAYERS; j++) {
+                int obj_end = tokens[idx].end;
+                for (int k = 0; idx + k < tokcount && tokens[idx + k].start < obj_end; k++) {
+                    if (tokens[idx + k].type == JSMN_STRING &&
+                        (int)tokens[idx + k].end - tokens[idx + k].start == 6 &&
+                        strncmp(json_str + tokens[idx + k].start, "digest", 6) == 0) {
+
+                        jsmntok_t *val = &tokens[idx + k + 1];
+                        int len = val->end - val->start;
+                        if (len >= PATH_MAX - 18) len = PATH_MAX - 19;
+
+                        // Format : blobs/sha256/<digest>.json
+                        snprintf(manifests[count], PATH_MAX, "%s/blobs/sha256/%.*s", path_to_image, len - 7, json_str + val->start + 7);
+                        printf("[DEBUG]: man : %s\n", manifests[count]);
+                        manifests[count][PATH_MAX - 1] = '\0';
+                        count++;
+                        break;
+                    }
+                }
+                idx++;
+            }
+
+            return count;
+        }
+    }
+
+    fprintf(stderr, "No manifests array found in index.json\n");
     return -1;
 }
 
@@ -757,7 +1150,7 @@ int extract_tar(const char *layer_path, const char *outdir) {
             const char *link_target = archive_entry_hardlink(entry);
             if (link_target) {
                 // C'est un hard link, on ignore l'erreur pour éviter les warnings non bloquants
-                fprintf(stderr, "Warning: skipping unresolved hard link to %s\n", link_target);
+                fprintf(stderr, "[OCI EXTRACTION] Warning: skipping unresolved hard link to %s\n", link_target);
 
                 continue;
             } else {
@@ -840,44 +1233,55 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
     }
 
 
-    //construire path vers manifest.json
+    //construire path vers index.json
     //read_file et gestion d'erreur (retour de -1)
-    char manifest_path[PATH_MAX];
-    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", real_image_path);
-    char *json = read_file(manifest_path);
+    char index_path[PATH_MAX];
+    snprintf(index_path, sizeof(index_path), "%s/index.json", real_image_path);
+    char *json = read_file(index_path);
     if (!json) {
         if (using_temp_dir) remove_dir_recursive(real_image_path);
         return 1;
     }
 
-    //créer tab layers contenant path vers les layers
-    //parse_manifest et gestion d'erreur
-    //free le pointeur vers le buffer du manifest
-    char layers[MAX_LAYERS][PATH_MAX];
-    int n = parse_manifest(json, layers);
-    free(json);
-    if (n < 0) {
-        if (using_temp_dir) remove_dir_recursive(real_image_path);
-        return 1;
-    }
 
-    //pour chaque layers
-        //construire chemin vers layer (path_to_image + layertab[i])
-        //extraire la layer vers path_to_extraction
-    for (int i = 0; i < n; i++) {
-        char layer_file[PATH_MAX];
-        snprintf(layer_file, sizeof(layer_file), "%s/%s", real_image_path, layers[i]);
-        if (extract_tar(layer_file, path_to_extraction) != 0) {
+
+    char manifests[8][PATH_MAX];
+    int mcount = parse_index(json, manifests, real_image_path);
+    free(json);
+
+
+
+    for (int i=0; i<mcount; i++) {
+        printf("manifest path: %s\n", manifests[i]);
+        char layers[MAX_LAYERS][PATH_MAX];
+        char *json = read_file(manifests[i]);
+        int n = parse_manifest_oci(json, layers, real_image_path);
+        free(json);
+        if (n < 0) {
             if (using_temp_dir) remove_dir_recursive(real_image_path);
             return 1;
         }
-        printf("Extracted layer: %s\n", layers[i]);
+
+         //pour chaque layers
+        //construire chemin vers layer (path_to_image + layertab[i])
+        //extraire la layer vers path_to_extraction
+        for (int i = 0; i < n; i++) {
+            char layer_file[PATH_MAX];
+            snprintf(layer_file, sizeof(layer_file), "%s/%s", real_image_path, layers[i]);
+            printf("[DEBUG] layer: %s\n", layer_file);
+            if (extract_tar(layer_file, path_to_extraction) != 0) {
+                if (using_temp_dir) remove_dir_recursive(real_image_path);
+                return 1;
+            }
+            printf("[OCI EXTRACTION] Extracted layer: %s\n", layers[i]);
+        }
+
     }
+
 
     if (using_temp_dir) {
         remove_dir_recursive(real_image_path);
     }
-
     return 0;
 }
 
@@ -888,15 +1292,103 @@ void print_help() {
         "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
         "Please note that this software is still under development.\n"
         "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
+        "Note: time namespace is set by default but time isolation is not complete\n"
         "\nOptions:\n"
         "Display this help message:\t\t\t--help\t\t-h\n"
-        "Specify image location (directory):\t\t--path\t\t-p\n"
+        "Specify OCI image location:\t\t--path\t\t-p\n"
+        "Specify extract location for the image:\t--extractpath\t-e\n"
         "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\tWARNING: Need to be superuser\n"
         "Disable Network isolation:\t\t\t--network\t-n\n"
         "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
         "Specify an output directory (read-write):\t--out\t\t-o\n"
         "Disable the use of an user namespace:\t\t--nouserns\t-u\tWARNING: Need to be superuser\n"
+        "Disable the use of a PID namespace:\t\t--nopidns\t-k\n"
+        "Disable the use of a cgroup namespace:\t\t--nocgroupns\t-g\n"
+        "Disable the use of a UTS namespace:\t\t--noutsns\t-j\n"
+        "Disable the use of a time namespace:\t\t--notimens\t-t\n"
+        "Launch embedded tests\t\t\t--test\t-l\n"
     
     );
     exit(EXIT_SUCCESS);
+}
+
+
+void test_child_pid_ns() {
+    printf("\n==========[TEST: PID isolation]==========\n\n");
+    if (opt_no_pid_ns) {
+        printf("[TEST] [CHILD]: My PID should not be 1\n");
+    } else {
+        printf("[TEST] [CHILD]: My PID should be 1\n");
+    }
+
+    printf("[TEST] [CHILD]: My actual PID: %d\n\n", getpid());
+}
+
+void test_child_mount_ns() {
+
+}
+
+void test_child_uts_ns(const char *real_hostname) {
+    printf("\n==========[TEST: Hostname and Domainname isolation]==========\n\n");
+    if (opt_no_uts_ns) {
+        printf("[TEST] [CHILD]: My hostname should be the same as my father's\n");
+    } else {
+        printf("[TEST] [CHILD]: My hostname should not be the same as my father's\n");
+    }
+
+    char my_hostname[100];
+    if (gethostname(my_hostname, 100) != 0) {
+        err(EXIT_FAILURE, "gethostname");
+    }
+    printf("[TEST] [CHILD]: My hostname: %s\tMy father's hostname: %s\n\n", my_hostname, real_hostname);
+}
+
+void test_child_user_ns() {
+    printf("\n==========[TEST: User isolation]==========\n\n");
+    if (host_uid == 0) {
+        printf("[TEST] [CHILD]: Both my UID and GID should be 0, because the runtime was launched by a privileged user\n");
+    } else {
+        if (opt_no_user_ns) {
+            printf("[TEST] [CHILD]: Both my UID and GID should not be 0\n");
+        } else {
+            printf("[TEST] [CHILD]: Both my UID and GID should be 0\n");
+        }
+    }
+
+    printf("[TEST] [CHILD]: My actual UID: %d\tMy actual GID: %d\n\n", geteuid(), getgid());
+}
+
+void test_child_net_ns() {
+
+}
+
+void test_child_ipc_ns() {
+
+}
+
+void test_child_time_ns() {
+
+}
+
+void launch_all_tests() {
+    test_child_pid_ns();
+
+    test_child_user_ns();
+
+    test_child_uts_ns(host_hostname);
+
+    //not implemented yet
+    test_child_mount_ns();
+
+    //not implemented yet
+    test_child_ipc_ns();
+
+    //not implemented yet
+    test_child_net_ns();
+
+    //not implemented yet
+    test_child_time_ns();
+
+
+    printf("\n==========[ALL TESTS HAVE TERMINATED]==========\n");
 }
