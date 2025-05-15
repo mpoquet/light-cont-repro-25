@@ -105,6 +105,10 @@ char *read_file(const char *path);
 
 int parse_manifest(const char *json_str, char layers[][PATH_MAX]);
 
+int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image);
+
+int parse_index(const char *json_str, char manifests[][PATH_MAX], const char *path_to_image);
+
 int extract_tar(const char *layer_path, const char *outdir);
 
 int extract_oci_image(const char *path_to_image, const char *path_to_extraction);
@@ -171,7 +175,7 @@ int test_extract_oci() {
         err(EXIT_FAILURE, "mkdir temp-rootfs/rootfs");
     }*/
 
-    if (extract_oci_image("./temp-rootfs/ubuntu.tar", "./temp-rootfs/rootfs") != 0) {
+    if (extract_oci_image("./images-test/debian_bookworm-slim.oci.tar", "./temp-rootfs/rootfs") != 0) {
         err(EXIT_FAILURE, "oci extraction");
     }
 
@@ -927,6 +931,7 @@ int elevate_cap_sys_time() {
  */
  char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
+    printf("[DEBUG] fopen: %s\n", path);
     if (!f) {
         perror("fopen");
         return NULL;
@@ -951,9 +956,7 @@ int elevate_cap_sys_time() {
     return buf;
 }
 
-/**
- * Parse manifest.json, extract layer paths into layers[]. Returns count or -1.
- */
+//Parse Docker Manifest. Not used here.
 int parse_manifest(const char *json_str, char layers[][PATH_MAX]) {
     jsmn_parser parser;
     jsmntok_t tokens[1024];
@@ -987,6 +990,122 @@ int parse_manifest(const char *json_str, char layers[][PATH_MAX]) {
         }
     }
     fprintf(stderr, "No Layers array found in manifest.json\n");
+    return -1;
+}
+
+int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image) {
+    jsmn_parser parser;
+    jsmntok_t tokens[1024];
+    jsmn_init(&parser);
+
+    int ret = jsmn_parse(&parser, json_str, strlen(json_str),
+                         tokens, sizeof(tokens)/sizeof(tokens[0]));
+    if (ret < 0) {
+        fprintf(stderr, "Failed to parse manifest OCI JSON: %d\n", ret);
+        return -1;
+    }
+
+    int tokcount = ret;
+
+    for (int i = 1; i < tokcount; i++) {
+        if (tokens[i].type == JSMN_STRING &&
+            tokens[i+1].type == JSMN_ARRAY &&
+            (int)(tokens[i].end - tokens[i].start) == 6 &&
+            strncmp(json_str + tokens[i].start, "layers", 6) == 0) {
+
+            int arr_size = tokens[i+1].size;
+            int idx = i + 2;
+            int count = 0;
+
+            for (int j = 0; j < arr_size && count < MAX_LAYERS; j++) {
+                int obj_end = tokens[idx].end;
+
+                for (int k = 0; idx + k < tokcount && tokens[idx + k].start < obj_end; k++) {
+                    if (tokens[idx + k].type == JSMN_STRING &&
+                        (int)(tokens[idx + k].end - tokens[idx + k].start) == 6 &&
+                        strncmp(json_str + tokens[idx + k].start, "digest", 6) == 0) {
+
+                        jsmntok_t *val = &tokens[idx + k + 1];
+                        int len = val->end - val->start;
+
+                        if (len < 7 || strncmp(json_str + val->start, "sha256:", 7) != 0) {
+                            fprintf(stderr, "Unexpected digest format\n");
+                            return -1;
+                        }
+
+                        // Format final : <path_to_image>/blobs/sha256/<digest>
+                        snprintf(digests[count], PATH_MAX, "/blobs/sha256/%.*s",
+                                len - 7, json_str + val->start + 7);
+                        digests[count][PATH_MAX - 1] = '\0';
+
+                        printf("[DEBUG]: layer: %s\n", digests[count]);
+
+                        count++;
+                        break;
+                    }
+                }
+
+                idx++;
+            }
+
+            return count;
+        }
+    }
+
+    fprintf(stderr, "No layers array found in manifest OCI\n");
+    return -1;
+}
+
+
+int parse_index(const char *json_str, char manifests[][PATH_MAX], const char *path_to_image) {
+    jsmn_parser parser;
+    jsmntok_t tokens[1024];
+    jsmn_init(&parser);
+    int ret = jsmn_parse(&parser, json_str, strlen(json_str), tokens, sizeof(tokens)/sizeof(tokens[0]));
+    if (ret < 0) {
+        fprintf(stderr, "Failed to parse index.json: %d\n", ret);
+        return -1;
+    }
+
+    int tokcount = ret;
+
+    for (int i = 1; i < tokcount; i++) {
+        if (tokens[i].type == JSMN_STRING &&
+            tokens[i+1].type == JSMN_ARRAY &&
+            (int)tokens[i].end - tokens[i].start == 9 &&
+            strncmp(json_str + tokens[i].start, "manifests", 9) == 0) {
+
+            int arr_size = tokens[i+1].size;
+            int idx = i + 2;
+            int count = 0;
+
+            for (int j = 0; j < arr_size && count < MAX_LAYERS; j++) {
+                int obj_end = tokens[idx].end;
+                for (int k = 0; idx + k < tokcount && tokens[idx + k].start < obj_end; k++) {
+                    if (tokens[idx + k].type == JSMN_STRING &&
+                        (int)tokens[idx + k].end - tokens[idx + k].start == 6 &&
+                        strncmp(json_str + tokens[idx + k].start, "digest", 6) == 0) {
+
+                        jsmntok_t *val = &tokens[idx + k + 1];
+                        int len = val->end - val->start;
+                        if (len >= PATH_MAX - 18) len = PATH_MAX - 19;
+
+                        // Format : blobs/sha256/<digest>.json
+                        snprintf(manifests[count], PATH_MAX, "%s/blobs/sha256/%.*s", path_to_image, len - 7, json_str + val->start + 7);
+                        printf("[DEBUG]: man : %s\n", manifests[count]);
+                        manifests[count][PATH_MAX - 1] = '\0';
+                        count++;
+                        break;
+                    }
+                }
+                idx++;
+            }
+
+            return count;
+        }
+    }
+
+    fprintf(stderr, "No manifests array found in index.json\n");
     return -1;
 }
 
@@ -1108,44 +1227,55 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
     }
 
 
-    //construire path vers manifest.json
+    //construire path vers index.json
     //read_file et gestion d'erreur (retour de -1)
-    char manifest_path[PATH_MAX];
-    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", real_image_path);
-    char *json = read_file(manifest_path);
+    char index_path[PATH_MAX];
+    snprintf(index_path, sizeof(index_path), "%s/index.json", real_image_path);
+    char *json = read_file(index_path);
     if (!json) {
         if (using_temp_dir) remove_dir_recursive(real_image_path);
         return 1;
     }
 
-    //créer tab layers contenant path vers les layers
-    //parse_manifest et gestion d'erreur
-    //free le pointeur vers le buffer du manifest
-    char layers[MAX_LAYERS][PATH_MAX];
-    int n = parse_manifest(json, layers);
-    free(json);
-    if (n < 0) {
-        if (using_temp_dir) remove_dir_recursive(real_image_path);
-        return 1;
-    }
 
-    //pour chaque layers
-        //construire chemin vers layer (path_to_image + layertab[i])
-        //extraire la layer vers path_to_extraction
-    for (int i = 0; i < n; i++) {
-        char layer_file[PATH_MAX];
-        snprintf(layer_file, sizeof(layer_file), "%s/%s", real_image_path, layers[i]);
-        if (extract_tar(layer_file, path_to_extraction) != 0) {
+
+    char manifests[8][PATH_MAX];
+    int mcount = parse_index(json, manifests, real_image_path);
+    free(json);
+
+
+
+    for (int i=0; i<mcount; i++) {
+        printf("manifest path: %s\n", manifests[i]);
+        char layers[MAX_LAYERS][PATH_MAX];
+        char *json = read_file(manifests[i]);
+        int n = parse_manifest_oci(json, layers, real_image_path);
+        free(json);
+        if (n < 0) {
             if (using_temp_dir) remove_dir_recursive(real_image_path);
             return 1;
         }
-        printf("[OCI EXTRACTION] Extracted layer: %s\n", layers[i]);
+
+         //pour chaque layers
+        //construire chemin vers layer (path_to_image + layertab[i])
+        //extraire la layer vers path_to_extraction
+        for (int i = 0; i < n; i++) {
+            char layer_file[PATH_MAX];
+            snprintf(layer_file, sizeof(layer_file), "%s/%s", real_image_path, layers[i]);
+            printf("[DEBUG] layer: %s\n", layer_file);
+            if (extract_tar(layer_file, path_to_extraction) != 0) {
+                if (using_temp_dir) remove_dir_recursive(real_image_path);
+                return 1;
+            }
+            printf("[OCI EXTRACTION] Extracted layer: %s\n", layers[i]);
+        }
+
     }
+
 
     if (using_temp_dir) {
         remove_dir_recursive(real_image_path);
     }
-
     return 0;
 }
 
@@ -1181,7 +1311,9 @@ void test_child_pid_ns() {
     printf("[TEST] [CHILD]: My actual PID: %d\n\n", getpid());
 }
 
-void test_child_mount_ns();
+void test_child_mount_ns() {
+
+}
 
 void test_child_uts_ns(const char *real_hostname) {
     printf("\n==========[TEST: Hostname and Domainname isolation]==========\n\n");
@@ -1213,11 +1345,17 @@ void test_child_user_ns() {
     printf("[TEST] [CHILD]: My actual UID: %d\tMy actual GID: %d\n\n", geteuid(), getgid());
 }
 
-void test_child_net_ns();
+void test_child_net_ns() {
 
-void test_child_ipc_ns();
+}
 
-void test_child_time_ns();
+void test_child_ipc_ns() {
+
+}
+
+void test_child_time_ns() {
+
+}
 
 void launch_all_tests() {
     test_child_pid_ns();
