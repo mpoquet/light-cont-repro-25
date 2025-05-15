@@ -13,12 +13,13 @@ ENGINES: list[str] = ["native", "ctr", "podman", "docker"] #, "crictl"]
 SYSBENCH_ARGS: dict[str, list[str]] = {
     "fileio": [
         "fileio",
-        "--file-test-mode=rndrw",  # Mixed random read/write
-        "--file-total-size=2G",    # Explicit size
-        "--file-num=4",            # Multiple files
-        "--file-extra-flags=direct",  # Bypass cache
-        "--file-fsync-freq=100",   # Realistic fsync frequency
-        "--file-rw-ratio=4"       # 4:1 read:write ratio
+        "--file-test-mode=rndrw",
+        "--file-total-size=2G",
+        "--file-num=4",
+        "--file-extra-flags=direct",
+        "--file-fsync-freq=100",
+        "--file-rw-ratio=4",
+        "--file-path=/mnt/ramfs"  # Pointage vers le montage RAMFS
     ],
     "cpu": [
         "cpu",
@@ -35,6 +36,14 @@ SYSBENCH_ARGS: dict[str, list[str]] = {
         "--threads=4"              # Multi-threaded
     ]
 }
+
+def setup_ramfs():
+    ramfs_path = "/mnt/ramfs"
+    if not os.path.exists(ramfs_path):
+        os.makedirs(ramfs_path, exist_ok=True)
+        run(["mount", "-t", "ramfs", "ramfs", ramfs_path])
+        # Ajuster les permissions si nécessaire
+        run(["chmod", "777", ramfs_path])
 
 def print_running_cmd(cmd: list[str]):
     cmd_joined:str = " ".join(cmd)
@@ -60,9 +69,16 @@ def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
         return ["sysbench"] + sysbench_args + ["run"]
     return None
 
+def cleanup():
+    run(["umount", "/mnt/ramfs"], check=False)
+    os.rmdir("/mnt/ramfs")
 
 def main():
 
+    # Configurer RAMFS pour les tests fileio
+    if any("fileio" in args for args in SYSBENCH_ARGS.values()):
+        print("Setting up RAMFS for fileio tests...")
+        setup_ramfs()
 
     for engine in ENGINES:
         if engine != "native":
@@ -86,6 +102,6 @@ def main():
                 p2.communicate()
                 p1.wait()
 
-
 if __name__ == "__main__":
     main()
+    cleanup()
