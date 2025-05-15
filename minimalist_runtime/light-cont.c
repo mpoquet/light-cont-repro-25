@@ -30,6 +30,7 @@
 #define STACK_SIZE (1024 * 1024)
 #define MAX_PID_LENGTH 20
 #define MAX_LAYERS 128
+#define MAX_ARGS 20
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
@@ -44,7 +45,8 @@ int opt_no_time_ns = 0;
 int opt_no_cgroup_ns = 0;
 int opt_no_uts_ns = 0;
 int opt_no_pid_ns = 0;
-int opt_test;
+int opt_test = 0;
+int opt_alr_extracted = 0;
 
 int path_specified = 0;
 int host_uid;
@@ -59,6 +61,7 @@ char image_loc[PATH_MAX];
 char extract_loc[PATH_MAX];
 char in_directory[PATH_MAX];
 char out_directory[PATH_MAX];
+char command_to_run[PATH_MAX];
 
 char new_in[PATH_MAX];
 char new_out[PATH_MAX];
@@ -82,6 +85,10 @@ int cgroup_manager_child(void *arg);
 int open_image_shell(const char *root_path);
 
 int open_image_sh_here(void *arg);
+
+int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_ARGS][PATH_MAX]);
+
+int run_command(char *const argv[]);
 
 void add_flag(unsigned long *flags, unsigned long flag_to_add);
 
@@ -184,6 +191,25 @@ int test_extract_oci() {
 
 int main(int argc, char *argv[]) {
 
+    /*
+    //test run_command
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s \"command arg1 arg2\"\n", argv[0]);
+        return 1;
+    }
+
+    char buf[MAX_ARGS][PATH_MAX];
+    char *parsed_argv[MAX_ARGS + 1];
+
+    int parsed_argc = parse_command(argv[1], parsed_argv, buf);
+
+    printf("here\n");
+    return run_command(parsed_argv);
+    */
+
+
+
+
     pid_t child_pid;
 
     int cgroup_fd;
@@ -206,11 +232,60 @@ int main(int argc, char *argv[]) {
 
     }
 
-    
+    //User-error management about paths options.
 
-    if (!*extract_loc) {
-        printf("No extract location has been specified. Default: ./rootfs\n");
-        strncpy(extract_loc, DEFAULT_ROOTFS, PATH_MAX);
+    if (!opt_alr_extracted) {
+        if (!*image_loc) {
+            printf("[ERROR] No image location has been specified. Please use --path (-p) option to specify the path to the oci image.\n");
+            printf("[ERROR] Use --help to display usage and options.\n");
+            exit(EXIT_FAILURE);
+        } else {
+            if (!*extract_loc) {
+                printf("[WARNING] No extract location has been specified. Default: ./rootfs\n");
+                strncpy(extract_loc, DEFAULT_ROOTFS, PATH_MAX);
+
+                if (extract_oci_image(image_loc, extract_loc) != 0) {
+                    err(EXIT_FAILURE, "oci extraction");
+                }
+                printf("\n[SUCCESS] Image succesfully extracted to %s\n", extract_loc);
+
+            } else {
+                if (extract_oci_image(image_loc, extract_loc) != 0) {
+                    err(EXIT_FAILURE, "oci extraction");
+                }
+                printf("\n[SUCCESS] Image succesfully extracted to %s\n", extract_loc);
+            }
+        }
+    } else {
+        if (!*image_loc) {
+            if (!*extract_loc) {
+                printf("[ERROR] No image location has been specified. \n");
+                printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
+                exit(EXIT_FAILURE);
+            } else {
+                printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            if (!*extract_loc) {
+                strncpy(extract_loc, image_loc, PATH_MAX);
+            } else {
+                printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
+                printf("[ERROR] However, you have also specified another path after the --extractpath (-e) option." 
+                                        "Please only specify the root directory path after the --path (-p) option.\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+
+    if (!*command_to_run) {
+        printf("[CONFIG] You did not specify a command to run (--run \"path/to/command arg1 arg2\"). Default: \"/bin/sh -i\".\n");
+        strncpy(command_to_run, "/bin/sh -i", PATH_MAX);
+    }
+
+    //Extract_loc can not be null (anymore) at this point
+    if (test_dir_access(extract_loc) != 0) {
+        printf("[ERROR] Could not access to %s\n", extract_loc);
     }
 
     //Chmodding directories if launching in superuser
@@ -238,16 +313,6 @@ int main(int argc, char *argv[]) {
 
     }
 
-    //Extracting OCI Image
-    if (!*image_loc) {
-        printf("No image location has been specified. please use -p option to specify the path to the oci image\n");
-        exit(EXIT_FAILURE);
-    } else {
-        if (extract_oci_image(image_loc, extract_loc) != 0) {
-            err(EXIT_FAILURE, "oci extraction");
-        }
-        printf("Image succesfully extracted to %s\n", extract_loc);
-    }
 
 
     //Testing access for specified in and out directories
@@ -482,7 +547,11 @@ int child(void *arg)
             exit(EXIT_SUCCESS);
         }
         //traitement
-        return open_image_sh_here(NULL);
+        char buf[MAX_ARGS][PATH_MAX];
+        char *parsed_args[MAX_ARGS + 1];
+        parse_command(command_to_run, parsed_args, buf);
+
+        return run_command(parsed_args);
     } else {
         // Parent
         if (opt_cgroupsv2) {
@@ -570,24 +639,26 @@ int opt_treatment(int argc, char *argv[]) {
       static struct option long_options[] =
         {
           {"help",        no_argument,       0, 'h'},
-          {"test",        no_argument,       0, 'l'},
-          {"cgroup",      no_argument,       0, 'c'},
+          {"test",        no_argument,       0, 'T'},
+          {"cgroup",      no_argument,       0, 'C'},
           {"network",     no_argument,       0, 'n'},
           {"nouserns",    no_argument,       0, 'u'},
-          {"nocgroupns",  no_argument,       0, 'g'},
-          {"noutsns",     no_argument,       0, 'j'},
-          {"nopidns",     no_argument,       0, 'k'},
+          {"nocgroupns",  no_argument,       0, 'c'},
+          {"noutsns",     no_argument,       0, 'U'},
+          {"nopidns",     no_argument,       0, 'P'},
           {"notimens",    no_argument,       0, 't'},
-          {"path",        required_argument, 0, 'p'},
-          {"exctractpath", required_argument, 0, 'e'},
-          {"in",          required_argument, 0, 'i'},
+          {"extracted",   no_argument,       0, 'E'},
+          {"path",       required_argument, 0, 'p'},
+          {"extractpath",required_argument, 0, 'e'},
+          {"in",         required_argument, 0, 'i'},
           {"out",        required_argument, 0, 'o'},
+          {"run",        required_argument, 0, 'r'},
           {0,            0,                 0, 0} //sentinel
         };
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hlcnugjktp:e:i:o:",
+      c = getopt_long (argc, argv, "hTCnucUPtEp:e:i:o:r:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -600,13 +671,13 @@ int opt_treatment(int argc, char *argv[]) {
             print_help();
             break;
 
-        case 'l':
+        case 'T':
             printf("[CONFIG] Tests will be launched in the container after the end of the configuration\n");
             gethostname(host_hostname, 100);
             opt_test = 1;
             break;
 
-        case 'c':
+        case 'C':
             printf("[CONFIG] Cgroup option selected. The container will be placed in the cgroup located in /sys/fs/cgroup/light-cont\n");
             opt_cgroupsv2 = 1;
             break;
@@ -624,21 +695,21 @@ int opt_treatment(int argc, char *argv[]) {
             remove_flag(&clone_flags, CLONE_NEWUSER);
             break;
 
-        case 'g':
+        case 'c':
             //disable cgroup namespace
             printf("[CONFIG] Cgroup namespace disbaled\n");
             opt_no_cgroup_ns = 1;
             remove_flag(&child2_clone_flags, CLONE_NEWCGROUP);
             break;
 
-        case 'j':
+        case 'U':
             //disable UTS namespace
             printf("[CONFIG] UTS namespace disabled\n");
             opt_no_uts_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWUTS);
             break;
 
-        case 'k':
+        case 'P':
             //disable PID namespace
             printf("[CONFIG] PID namespace disabled\n");
             opt_no_pid_ns = 1;
@@ -650,6 +721,12 @@ int opt_treatment(int argc, char *argv[]) {
             printf("[CONFIG] Time namespace disabled\n");
             opt_no_time_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWTIME);
+            break;
+
+        case 'E':
+            //The image is already extracted
+            opt_alr_extracted = 1;
+            printf("[CONFIG] You have specified that the image is already extracted.\n");
             break;
 
         case 'p':
@@ -676,6 +753,11 @@ int opt_treatment(int argc, char *argv[]) {
             snprintf(out_directory, sizeof(out_directory), "%s", optarg);
             opt_out = 1;
             printf("[CONFIG] Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
+            break;
+
+        case 'r':
+            strncpy(command_to_run, optarg, PATH_MAX);
+            printf("[CONFIG] Command to run: %s\n", command_to_run);
             break;
 
         case '?':
@@ -745,6 +827,38 @@ int open_image_shell(const char *root_path) {
 
 int open_image_sh_here(void *arg) {
     return open_image_shell("");
+}
+
+int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_ARGS][PATH_MAX]) {
+    int argc = 0;
+    char buffer[PATH_MAX * (MAX_ARGS + 1)];
+
+    strncpy(buffer, input, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    char *token = strtok(buffer, " ");
+    while (token != NULL && argc < MAX_ARGS) {
+        strncpy(buf[argc], token, PATH_MAX - 1);
+        buf[argc][PATH_MAX - 1] = '\0';
+        argv_out[argc] = buf[argc];
+        argc++;
+        token = strtok(NULL, " ");
+    }
+
+    argv_out[argc] = NULL; // execvp needs a NULL-terminated array
+
+    return argc;
+}
+
+int run_command(char *const argv[]) {
+    //printf("[DEBUG] Command to run:\n");
+    //for (int i = 0; argv[i] != NULL; i++) {
+      //printf("  argv[%d] = %s\n", i, argv[i]);
+    //}
+
+    execvp(argv[0], argv);
+    perror("execvp failed");
+    return 1;
 }
 
 void add_flag(unsigned long *flags, unsigned long flag_to_add) {
@@ -937,7 +1051,7 @@ int elevate_cap_sys_time() {
  */
  char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
-    printf("[DEBUG] fopen: %s\n", path);
+    //printf("[DEBUG] fopen: %s\n", path);
     if (!f) {
         perror("fopen");
         return NULL;
@@ -1044,7 +1158,7 @@ int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const cha
                                 len - 7, json_str + val->start + 7);
                         digests[count][PATH_MAX - 1] = '\0';
 
-                        printf("[DEBUG]: layer: %s\n", digests[count]);
+                        //printf("[DEBUG]: layer: %s\n", digests[count]);
 
                         count++;
                         break;
@@ -1098,7 +1212,7 @@ int parse_index(const char *json_str, char manifests[][PATH_MAX], const char *pa
 
                         // Format : blobs/sha256/<digest>.json
                         snprintf(manifests[count], PATH_MAX, "%s/blobs/sha256/%.*s", path_to_image, len - 7, json_str + val->start + 7);
-                        printf("[DEBUG]: man : %s\n", manifests[count]);
+                        //printf("[DEBUG]: man : %s\n", manifests[count]);
                         manifests[count][PATH_MAX - 1] = '\0';
                         count++;
                         break;
@@ -1252,7 +1366,7 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
 
 
     for (int i=0; i<mcount; i++) {
-        printf("manifest path: %s\n", manifests[i]);
+        printf("[OCI EXTRACTION] [DEBUG] manifest path: %s\n", manifests[i]);
         char layers[MAX_LAYERS][PATH_MAX];
         char *json = read_file(manifests[i]);
         int n = parse_manifest_oci(json, layers, real_image_path);
@@ -1268,7 +1382,7 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
         for (int i = 0; i < n; i++) {
             char layer_file[PATH_MAX];
             snprintf(layer_file, sizeof(layer_file), "%s/%s", real_image_path, layers[i]);
-            printf("[DEBUG] layer: %s\n", layer_file);
+            //printf("[DEBUG] layer: %s\n", layer_file);
             if (extract_tar(layer_file, path_to_extraction) != 0) {
                 if (using_temp_dir) remove_dir_recursive(real_image_path);
                 return 1;
@@ -1295,18 +1409,20 @@ void print_help() {
         "Note: time namespace is set by default but time isolation is not complete\n"
         "\nOptions:\n"
         "Display this help message:\t\t\t--help\t\t-h\n"
-        "Specify OCI image location:\t\t--path\t\t-p\n"
-        "Specify extract location for the image:\t--extractpath\t-e\n"
-        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-c\tWARNING: Need to be superuser\n"
+        "Specify OCI image location:\t\t\t--path path\t\t-p\n"
+        "Specify extract location for the image:\t\t--extractpath path\t-e\n"
+        "Specify that the image has \nalready been extracted: \t\t\t--extracted\t-E\n"
+        "Run command path: \t\t\t\t--run \"/path/cmd args\"\t-r\n"
+        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-C\tWARNING: Need to be superuser\n"
         "Disable Network isolation:\t\t\t--network\t-n\n"
         "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
         "Specify an output directory (read-write):\t--out\t\t-o\n"
         "Disable the use of an user namespace:\t\t--nouserns\t-u\tWARNING: Need to be superuser\n"
-        "Disable the use of a PID namespace:\t\t--nopidns\t-k\n"
-        "Disable the use of a cgroup namespace:\t\t--nocgroupns\t-g\n"
-        "Disable the use of a UTS namespace:\t\t--noutsns\t-j\n"
+        "Disable the use of a PID namespace:\t\t--nopidns\t-P\n"
+        "Disable the use of a cgroup namespace:\t\t--nocgroupns\t-c\n"
+        "Disable the use of a UTS namespace:\t\t--noutsns\t-U\n"
         "Disable the use of a time namespace:\t\t--notimens\t-t\n"
-        "Launch embedded tests\t\t\t--test\t-l\n"
+        "Launch embedded tests\t\t\t\t--test\t-T\n"
     
     );
     exit(EXIT_SUCCESS);
