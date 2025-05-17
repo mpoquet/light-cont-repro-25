@@ -53,6 +53,9 @@ int host_uid;
 int host_gid;
 char host_hostname[100];
 
+char **envp = NULL; //No env variables by default.
+int env_count;
+
 unsigned long clone_flags = DEFAULT_NAMESPACES_FLAGS;
 unsigned long child2_clone_flags = DEFAULT_SECONDCHILD_NSFLAGS;
 const char *cgroup_folder_path = CGROUP_PATH;
@@ -79,6 +82,8 @@ int create_cgroup_dir(const char *cgroup_folder_path);
 int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
 
 int opt_treatment(int argc, char *argv[]);
+
+char **copy_env();
 
 int cgroup_manager_child(void *arg);
 
@@ -206,9 +211,6 @@ int main(int argc, char *argv[]) {
     printf("here\n");
     return run_command(parsed_argv);
     */
-
-
-
 
     pid_t child_pid;
 
@@ -634,6 +636,8 @@ int opt_treatment(int argc, char *argv[]) {
 
     int c;
 
+    char *env_arg;
+
   while (1)
     {
       static struct option long_options[] =
@@ -653,12 +657,13 @@ int opt_treatment(int argc, char *argv[]) {
           {"in",         required_argument, 0, 'i'},
           {"out",        required_argument, 0, 'o'},
           {"run",        required_argument, 0, 'r'},
+          {"env",        required_argument, 0, 'v'},
           {0,            0,                 0, 0} //sentinel
         };
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hTCnucUPtEp:e:i:o:r:",
+      c = getopt_long (argc, argv, "hTCnucUPtEp:e:i:o:r:v:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -760,6 +765,33 @@ int opt_treatment(int argc, char *argv[]) {
             printf("[CONFIG] Command to run: %s\n", command_to_run);
             break;
 
+        case 'v':
+            env_arg = strdup(optarg);
+
+            if (strcmp(env_arg, "KEEPCURRENTENV") == 0) {
+                //charger env courant
+                //must be first --env call
+
+                envp = copy_env();
+                printf("[CONFIG] Current environment variables kept for the image.\n");
+
+            } else {
+                char **tmp = realloc(envp, (env_count + 2) * sizeof(char*));
+                if (!tmp) {
+                    perror("realloc");
+                    //cleanup
+                    for (int i = 0; i < env_count; ++i) free(envp[i]);
+                    free(envp);
+
+                    exit(1);
+                }
+
+                envp = tmp;
+                envp[env_count++] = env_arg;
+                envp[env_count] = NULL; // Toujours terminer le tableau
+            }
+            break;
+
         case '?':
             printf("Option not recognized. Please use --help (-h) option to display help text.\n");
             exit(EXIT_FAILURE);
@@ -783,6 +815,22 @@ int opt_treatment(int argc, char *argv[]) {
     return 0;
 }
 
+char **copy_env(void) {
+    int count = 0;
+    while (environ[count]) count++;
+
+    char **env_copy = malloc((count + 1) * sizeof(char *));
+    if (!env_copy) return NULL;
+
+    for (int i = 0; i < count; ++i) {
+        env_copy[i] = strdup(environ[i]);
+    }
+    env_copy[count] = NULL;
+
+    env_count = count;
+
+    return env_copy;
+}
 
 int cgroup_manager_child(void *arg) {
     char        path[PATH_MAX];
@@ -812,6 +860,7 @@ int cgroup_manager_child(void *arg) {
     return 0;
 }
 
+//obsolète
 int open_image_shell(const char *root_path) {
 
     char sh_path[PATH_MAX];
@@ -825,6 +874,7 @@ int open_image_shell(const char *root_path) {
     return 1;    
 }
 
+//obsolète
 int open_image_sh_here(void *arg) {
     return open_image_shell("");
 }
@@ -851,13 +901,12 @@ int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_
 }
 
 int run_command(char *const argv[]) {
-    //printf("[DEBUG] Command to run:\n");
-    //for (int i = 0; argv[i] != NULL; i++) {
-      //printf("  argv[%d] = %s\n", i, argv[i]);
-    //}
 
-    execvp(argv[0], argv);
+    execvpe(argv[0], argv, envp);
     perror("execvp failed");
+
+    for (int i = 0; i < env_count; ++i) free(envp[i]);
+    free(envp);
     return 1;
 }
 
@@ -968,6 +1017,7 @@ int reset_monotonic_and_boottime_clocks_to_zero() {
     return 0;
 }
 
+//Marche pas
 int configure_clocks() {
     int fd = open("/proc/self/timens_offsets", O_WRONLY);
     if (fd == -1) {
@@ -1008,6 +1058,7 @@ int configure_clocks() {
     return 0;
 }
 
+//Marche pas, le process a déjà toute les caps il ne peut juste pas écrire dans le fichier
 int elevate_cap_sys_time() {
     cap_t caps;
     caps = cap_get_proc();  // Obtenir les capabilités actuelles du processus
@@ -1406,23 +1457,30 @@ void print_help() {
         "Light-cont is a lightweight container runtime intended to maximize reproducibility of experiments.\n"
         "Please note that this software is still under development.\n"
         "Not every planned fonctionalities are yet implemented, and some problems may occur during use.\n"
-        "Note: time namespace is set by default but time isolation is not complete\n"
-        "\nOptions:\n"
-        "Display this help message:\t\t\t--help\t\t-h\n"
-        "Specify OCI image location:\t\t\t--path path\t\t-p\n"
-        "Specify extract location for the image:\t\t--extractpath path\t-e\n"
-        "Specify that the image has \nalready been extracted: \t\t\t--extracted\t-E\n"
-        "Run command path: \t\t\t\t--run \"/path/cmd args\"\t-r\n"
-        "Include the runtime in a cgroup (v2 only):\t--cgroup\t-C\tWARNING: Need to be superuser\n"
-        "Disable Network isolation:\t\t\t--network\t-n\n"
-        "Specify an entry directory (read-only):\t\t--in\t\t-i\n"
-        "Specify an output directory (read-write):\t--out\t\t-o\n"
-        "Disable the use of an user namespace:\t\t--nouserns\t-u\tWARNING: Need to be superuser\n"
-        "Disable the use of a PID namespace:\t\t--nopidns\t-P\n"
-        "Disable the use of a cgroup namespace:\t\t--nocgroupns\t-c\n"
-        "Disable the use of a UTS namespace:\t\t--noutsns\t-U\n"
-        "Disable the use of a time namespace:\t\t--notimens\t-t\n"
-        "Launch embedded tests\t\t\t\t--test\t-T\n"
+        "\tNote: time namespace is set by default but time isolation is not complete\n"
+        "\n"
+        "Options:\n"
+        "\n"
+        "--help\t\t\t-h\tDisplay this help message\n"
+        "--path /path\t\t-p \tSpecify OCI image location\n"
+        "--extractpath /path\t-e \tSpecify extract location for the image\n"
+        "--extracted\t\t-E\tSpecify that the image has already been extracted\n"
+        "--run \"/path/cmd args\"\t-r\tRun command path.\n"
+        "--cgroup\t\t-C\tInclude the runtime in a cgroup (v2 only)\tWARNING: Need to be superuser\n"
+        "--network\t\t-n\tDisable Network isolation\n"
+        "--in\t\t\t-i\tSpecify an entry directory (read-only)\n"
+        "--out\t\t\t-o\tSpecify an output directory (read-write)\n"
+        "--nouserns\t\t-u\tDisable the use of an user namespace\t\tWARNING: Need to be superuser\n"
+        "--nopidns\t\t-P\tDisable the use of a PID namespace\n"
+        "--nocgroupns\t\t-c\tDisable the use of a cgroup namespace\n"
+        "--noutsns\t\t-U\tDisable the use of a UTS namespace\n"
+        "--notimens\t\t-t\tDisable the use of a time namespace\n"
+        "--test\t\t\t-T\tLaunch embedded isolation tests\n"
+        "--env VAR=val\t\t-v\tAdd environment variable\n"
+        "\n"
+        "By default no environment variables are defined. You can call --env VAR=value as many time as you wish.\n"
+        "If you wish to keep your environment setup, please call --env KEEPCURRENTENV.\n"
+        "\tNote: this must be on the first occurence of --env callings\n"
     
     );
     exit(EXIT_SUCCESS);
