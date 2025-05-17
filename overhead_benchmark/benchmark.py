@@ -18,10 +18,10 @@ SYSBENCH_ARGS: dict[str, list[str]] = {
         "--file-test-mode=rndrw",
         "--file-total-size=2G",
         "--file-num=4",
-        "--file-extra-flags=direct",
+        "--file-extra-flags=direct", # Bypass cache
         "--file-fsync-freq=100",
         "--file-rw-ratio=4",
-        "--file-path=/mnt/ramfs"  # Pointage vers le montage RAMFS
+        "--file-path=/mnt/ramfs"  # Pointing to RAMFS
     ],
     "cpu": [
         "cpu",
@@ -85,7 +85,6 @@ def cleanup():
     os.rmdir("/mnt/ramfs")
 
 def main():
-
     # Configurer RAMFS pour les tests fileio
     if any("fileio" in args for args in SYSBENCH_ARGS.values()):
         print("Setting up RAMFS for fileio tests...")
