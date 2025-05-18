@@ -8,10 +8,8 @@ IMAGE: str = "./docker-image-sysbench.tar.gz"
 IMAGE_OCI: str = "./sysbench.oci.tar"
 IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["light-cont", "native", "ctr", "podman", "docker"] #, "crictl"]
-# TODO ajouter CRI-O
+ENGINES: list[str] = ["light-cont", "native", "ctr", "podman", "docker"]
 
-# ChatGPT
 SYSBENCH_ARGS: dict[str, list[str]] = {
     "fileio": [
         "fileio",
