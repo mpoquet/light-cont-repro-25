@@ -5,7 +5,7 @@ import socket
 
 HOST_TEST:str = "example.com"
 ENGINES: list[str] = ["light-cont", "native", "ctr", "podman", "docker"]
-IMAGE_NAME =
+IMAGE_NAME = "alpine test"
 # Tester l'accès au système de fichiers
 def test_filesystem_access():
     try:
@@ -58,7 +58,7 @@ def test_current_time():
 
 # Exécuter les tests
 if __name__ == "__main__":
-
+    for ()
     #test_filesystem_access()
     test_network_access()
     #test_current_time()
