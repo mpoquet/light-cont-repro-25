@@ -31,6 +31,7 @@
 #define MAX_PID_LENGTH 20
 #define MAX_LAYERS 128
 #define MAX_ARGS 20
+#define MAX_MOUNT_DIRS 10
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
@@ -40,6 +41,8 @@
 int opt_cgroupsv2 = 0;
 int opt_in = 0;
 int opt_out = 0;
+int opt_mount_rdwr = 0;
+int opt_mount_rdonly = 0;
 int opt_no_user_ns = 0;
 int opt_no_time_ns = 0;
 int opt_no_cgroup_ns = 0;
@@ -68,6 +71,13 @@ char command_to_run[PATH_MAX];
 
 char new_in[PATH_MAX];
 char new_out[PATH_MAX];
+
+char to_mount_dirs[MAX_MOUNT_DIRS][PATH_MAX];
+char to_mount_rdonly_dirs[MAX_MOUNT_DIRS][PATH_MAX];
+char paths_to_mounted_rdwr_dirs[MAX_MOUNT_DIRS][PATH_MAX];
+char paths_to_mounted_rdonly_dirs[MAX_MOUNT_DIRS][PATH_MAX];
+int mt_dir_count = 0;
+int mt_dir_rdonly_count = 0;
 
 struct timens_offset {
     int clockid;
@@ -106,6 +116,8 @@ int test_file_access(const char *path);
 void write_in_file(const char *path, const char *str);
 
 void uid_gid_mapping(int host_uid, int host_gid);
+
+const char *get_filename_from_path(const char *path);
 
 int reset_monotonic_and_boottime_clocks_to_zero();
 
@@ -196,21 +208,6 @@ int test_extract_oci() {
 
 int main(int argc, char *argv[]) {
 
-    /*
-    //test run_command
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s \"command arg1 arg2\"\n", argv[0]);
-        return 1;
-    }
-
-    char buf[MAX_ARGS][PATH_MAX];
-    char *parsed_argv[MAX_ARGS + 1];
-
-    int parsed_argc = parse_command(argv[1], parsed_argv, buf);
-
-    printf("here\n");
-    return run_command(parsed_argv);
-    */
 
     pid_t child_pid;
 
@@ -290,19 +287,25 @@ int main(int argc, char *argv[]) {
         printf("[ERROR] Could not access to %s\n", extract_loc);
     }
 
+
+
+    __mode_t old_modes[mt_dir_count];
     //Chmodding directories if launching in superuser
     if (host_uid == 0) {
-        if (opt_out) {
-            if (stat(out_directory, &out_dir_stat) != 0) { //getting stats about the directory to get the permissions
-                err(EXIT_FAILURE, "stat out_dir");
-            }
-            if (((out_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
-                if (chmod(out_directory, 0777) != 0) {
-                    err(EXIT_FAILURE, "chmod out directory");
-                }
-            }
-        }
+        if (opt_mount_rdwr) {
 
+            for (int i=0; i<mt_dir_count; i++) {
+                if (stat(to_mount_dirs[i], &out_dir_stat) != 0) { //getting stats about the directory to get the permissions
+                    err(EXIT_FAILURE, "stat out_dir");
+                }
+                old_modes[i] = out_dir_stat.st_mode;
+                if (((out_dir_stat.st_mode & 07777) != 0777)) { //Giving access to everybody for the time of execution if the perms aren't already 0777
+                    if (chmod(to_mount_dirs[i], 0777) != 0) {
+                        err(EXIT_FAILURE, "chmod to-mount rd-wr directory");
+                    }
+                }
+            }   
+        }
         if (stat(extract_loc, &rootfs_dir_stat) != 0) { //getting stats about the directory to get the permissions
             err(EXIT_FAILURE, "stat rootfs_dir");
         }
@@ -318,22 +321,34 @@ int main(int argc, char *argv[]) {
 
 
     //Testing access for specified in and out directories
-    if (opt_in) {
-        if (test_dir_access(in_directory) != 0) {
-            err(EXIT_FAILURE, "Cannot access the specified entry directory");
+    if (opt_mount_rdonly) {
+        for (int i=0; i<mt_dir_count; i++) {
+            if (test_dir_access(to_mount_rdonly_dirs[i]) != 0) {
+                err(EXIT_FAILURE, "Cannot access the %s directory to mount in read-only", to_mount_rdonly_dirs[i]);
+            }
         }
         
     }
-    if (opt_out) {
-        if (test_dir_access(out_directory) != 0) {
-            err(EXIT_FAILURE, "Cannot access the specified output directory");
+    if (opt_mount_rdwr) {
+        for (int i=0; i<mt_dir_count; i++) {
+            if (test_dir_access(to_mount_dirs[i]) != 0) {
+                err(EXIT_FAILURE, "Cannot access to %s directory to mount in read-write", to_mount_dirs[i]);
+            }
         }
+        
         
     }
 
     //Making paths to in and out dirs
-    snprintf(new_in, sizeof(new_in), "%s%s", extract_loc, "/in_dir");
-    snprintf(new_out, sizeof(new_out), "%s%s", extract_loc, "/out_dir");
+    for (int i=0; i<mt_dir_count; i++) {
+        snprintf(paths_to_mounted_rdwr_dirs[i], PATH_MAX, "%s/%s", extract_loc, get_filename_from_path(to_mount_dirs[i]));
+        printf("[DEBUG] path_to_mount: %s\n", paths_to_mounted_rdwr_dirs[i]);
+    }
+
+    for (int i=0; i<mt_dir_rdonly_count; i++) {
+        snprintf(paths_to_mounted_rdonly_dirs[i], PATH_MAX, "%s/%s", extract_loc, get_filename_from_path(to_mount_rdonly_dirs[i]));
+        printf("[DEBUG] path_to_mount: %s\n", paths_to_mounted_rdonly_dirs[i]);
+    }
 
 
     struct clone_args clone3_args = {
@@ -362,11 +377,17 @@ int main(int argc, char *argv[]) {
     }
 
 
+    //à changer car système de mount a changé
     if (host_uid == 0) {
-        if (opt_out && ((out_dir_stat.st_mode & 07777) != 0777)) { //Revocate access for everybody
-            mode_t old_mode = out_dir_stat.st_mode & 07777; //getting only the permissions out of st_mode
-            if (chmod(out_directory, old_mode) != 0) {
-                err(EXIT_FAILURE, "chmod out directory");
+        if (opt_mount_rdwr) {
+            for (int i=0; i<mt_dir_count; i++) {
+                if ((old_modes[i] & 07777) != 0777) {
+                    if (chmod(to_mount_dirs[i], old_modes[i]) != 0) {
+                        err(EXIT_FAILURE, "chmod out directory: %s", to_mount_dirs[i]);
+                    }
+                }
+
+                
             }
         }
 
@@ -475,40 +496,41 @@ int child(void *arg)
 
 
     //Mounting the entry directory in read-only
-    if (*in_directory) { //if in_directory not null
+    if (opt_mount_rdonly) { //if in_directory not null
 
+        for (int i=0; i<mt_dir_rdonly_count; i++) {
+            if (mkdir(paths_to_mounted_rdonly_dirs[i], 0777) == -1 && errno != EEXIST) {
+                err(EXIT_FAILURE, "mkdir new_in");
+            }
 
-        if (mkdir(new_in, 0777) == -1 && errno != EEXIST) {
-            err(EXIT_FAILURE, "mkdir new_in");
-        }
-        /*if (chmod(new_in, 0777) == -1) {
-            err(EXIT_FAILURE, "chmod in_dir");
-        }*/
+            if (mount(to_mount_rdonly_dirs[i], paths_to_mounted_rdonly_dirs[i], NULL, MS_BIND, NULL) == -1) {
+                err(EXIT_FAILURE, "mount-MS_BIND - %s - %s", to_mount_rdonly_dirs[i], paths_to_mounted_rdonly_dirs[i]);
+            }
 
-        if (mount(in_directory, new_in, NULL, MS_BIND, NULL) == -1) {
-            err(EXIT_FAILURE, "mount-MS_BIND - in_directory");
-        }
-
-        //RDONLY have to be executed on a remount, it doesn't apply on the first bind mount
-        if (mount(NULL, new_in, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1) {
-            err(EXIT_FAILURE, "mount-REMOUNT-RDONLY - in_directory");
+            //RDONLY have to be executed on a remount, it doesn't apply on the first bind mount
+            if (mount(NULL, paths_to_mounted_rdonly_dirs[i], NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1) {
+                err(EXIT_FAILURE, "mount-REMOUNT-RDONLY - %s", paths_to_mounted_rdonly_dirs[i]);
+            }
         }
     }
 
-    if (*out_directory) { //if out_directory not null
+    if (opt_mount_rdwr) { //if out_directory not null
         
 
-        if (mkdir(new_out, 0777) == -1 && errno != EEXIST) {
-            err(EXIT_FAILURE, "mkdir new_out");
-        }
-        if (chmod(new_out, 0777) == -1) {
-            err(EXIT_FAILURE, "chmod out_dir");
+        for (int i=0; i<mt_dir_count; i++) {
+            if (mkdir(paths_to_mounted_rdwr_dirs[i], 0777) == -1 && errno != EEXIST) {
+                err(EXIT_FAILURE, "mkdir %s", paths_to_mounted_rdwr_dirs[i]);
+            }
+
+            /*if (chmod(paths_to_mounted_rdwr_dirs[i], 0777) == -1) {
+                err(EXIT_FAILURE, "chmod rdwrdir %s", paths_to_mounted_rdwr_dirs[i]);
+            }*/
+
+            if (mount(to_mount_dirs[i], paths_to_mounted_rdwr_dirs[i], NULL, MS_BIND, NULL) == -1) {
+                err(EXIT_FAILURE, "mount-MS_BIND - %s - %s", to_mount_dirs[i], paths_to_mounted_rdwr_dirs[i]);
+            }
         }
 
-        //mounting in read-write, in order to let the container write output files
-        if (mount(out_directory, new_out, NULL, MS_BIND, NULL) == -1) {
-            err(EXIT_FAILURE, "mount-MS_BIND - out_directory");
-        }
 
     }
 
@@ -563,21 +585,29 @@ int child(void *arg)
     }
 
 
-    if (opt_in) {
-        if (umount2("./in_dir", MNT_DETACH) == -1) {
-            err(EXIT_FAILURE, "unmount in_dir");
-        }
-        if (rmdir("./in_dir") == -1) {
-            err(EXIT_FAILURE, "rmdir");
+    if (opt_mount_rdonly) {
+
+        for (int i=0; i<mt_dir_rdonly_count; i++) {
+            const char *dir_name = get_filename_from_path(paths_to_mounted_rdonly_dirs[i]);
+            if (umount2(dir_name, MNT_DETACH) == -1) {
+                err(EXIT_FAILURE, "unmount %s", paths_to_mounted_rdonly_dirs[i]);
+            }
+            if (rmdir(dir_name) == -1) {
+                err(EXIT_FAILURE, "rmdir %s", paths_to_mounted_rdonly_dirs[i]);
+            }
         }
     }
     if (opt_out) {
-        if (umount2("./out_dir", MNT_DETACH) == -1) {
-            err(EXIT_FAILURE, "unmount out_dir");
+        for (int i=0; i<mt_dir_count; i++) {
+            const char *dir_name = get_filename_from_path(paths_to_mounted_rdwr_dirs[i]);
+            if (umount2(dir_name, MNT_DETACH) == -1) {
+                err(EXIT_FAILURE, "unmount %s", paths_to_mounted_rdwr_dirs[i]);
+            }
+            if (rmdir(dir_name) == -1) {
+                err(EXIT_FAILURE, "rmdir %s", paths_to_mounted_rdwr_dirs[i]);
+            }
         }
-        if (rmdir("./out_dir") == -1) {
-            err(EXIT_FAILURE, "rmdir");
-        }
+
     }
 
     if (opt_cgroupsv2) {
@@ -654,8 +684,10 @@ int opt_treatment(int argc, char *argv[]) {
           {"extracted",   no_argument,       0, 'E'},
           {"path",       required_argument, 0, 'p'},
           {"extractpath",required_argument, 0, 'e'},
-          {"in",         required_argument, 0, 'i'},
-          {"out",        required_argument, 0, 'o'},
+          //{"in",         required_argument, 0, 'i'},
+          //{"out",        required_argument, 0, 'o'},
+          {"mount",      required_argument, 0, 'm'},
+          {"mountrdonly",required_argument, 0, 'M'},
           {"run",        required_argument, 0, 'r'},
           {"env",        required_argument, 0, 'v'},
           {0,            0,                 0, 0} //sentinel
@@ -663,7 +695,7 @@ int opt_treatment(int argc, char *argv[]) {
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hTCnucUPtEp:e:i:o:r:v:",
+      c = getopt_long (argc, argv, "hTCnucUPtEp:e:m:M:r:v:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -758,6 +790,37 @@ int opt_treatment(int argc, char *argv[]) {
             snprintf(out_directory, sizeof(out_directory), "%s", optarg);
             opt_out = 1;
             printf("[CONFIG] Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
+            break;
+
+        case 'm':
+            //dirs à monter en rd-wr
+            opt_mount_rdwr = 1; //TODO changer nom variable
+            if (mt_dir_count >= MAX_MOUNT_DIRS - 1) {
+                printf("[ERROR] Too much directories to mount in rd-wr." 
+                              "Please do not mount more than %d directories in rd-wr or modify the MAX_MOUNT_DIRS constant in the source code.\n"
+                            , MAX_MOUNT_DIRS);
+                exit(EXIT_FAILURE);
+            }
+            strncpy(to_mount_dirs[mt_dir_count], optarg, PATH_MAX);
+            printf("[DEBUG] Mounted dir n°%d (rd-wr): %s\n", mt_dir_count, to_mount_dirs[mt_dir_count]);
+
+
+            mt_dir_count++;
+            break;
+        
+        case 'M':
+            //dirs à monter en rd-only
+            opt_mount_rdonly = 1;
+            if (mt_dir_rdonly_count >= MAX_MOUNT_DIRS - 1) {
+                printf("[ERROR] Too much directories to mount in rd-wr." 
+                              "Please do not mount more than %d directories in rd-wr or modify the MAX_MOUNT_DIRS constant in the source code.\n"
+                            , MAX_MOUNT_DIRS);
+                exit(EXIT_FAILURE);
+            }
+            strncpy(to_mount_rdonly_dirs[mt_dir_rdonly_count], optarg, PATH_MAX);
+            printf("[DEBUG] Mounted dir n°%d (rd-wr): %s\n", mt_dir_rdonly_count, to_mount_rdonly_dirs[mt_dir_rdonly_count]);
+
+            mt_dir_rdonly_count++;
             break;
 
         case 'r':
@@ -962,6 +1025,15 @@ void uid_gid_mapping(int host_uid, int host_gid) {
         snprintf(gid_map, sizeof(gid_map), "0 %d 1", host_gid);
         write_in_file("/proc/self/setgroups", "deny");
         write_in_file("/proc/self/gid_map", gid_map);        
+    }
+}
+
+const char* get_filename_from_path(const char *path) {
+    const char *last_slash = strrchr(path, '/');
+    if (last_slash) {
+        return last_slash + 1;
+    } else {
+        return path;
     }
 }
 
@@ -1399,7 +1471,7 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
 
 
     //construire path vers index.json
-    //read_file et gestion d'erreur (retour de -1)
+    //read_file et gestion d'erreur 
     char index_path[PATH_MAX];
     snprintf(index_path, sizeof(index_path), "%s/index.json", real_image_path);
     char *json = read_file(index_path);
@@ -1427,7 +1499,7 @@ int extract_oci_image(const char *path_to_image, const char *path_to_extraction)
             return 1;
         }
 
-         //pour chaque layers
+        //pour chaque layers
         //construire chemin vers layer (path_to_image + layertab[i])
         //extraire la layer vers path_to_extraction
         for (int i = 0; i < n; i++) {
