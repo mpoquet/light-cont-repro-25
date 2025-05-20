@@ -322,7 +322,7 @@ int main(int argc, char *argv[]) {
 
     //Testing access for specified in and out directories
     if (opt_mount_rdonly) {
-        for (int i=0; i<mt_dir_count; i++) {
+        for (int i=0; i<mt_dir_rdonly_count; i++) {
             if (test_dir_access(to_mount_rdonly_dirs[i]) != 0) {
                 err(EXIT_FAILURE, "Cannot access the %s directory to mount in read-only", to_mount_rdonly_dirs[i]);
             }
@@ -778,6 +778,7 @@ int opt_treatment(int argc, char *argv[]) {
             printf("[CONFIG] Extracted image location: %s\n", optarg);
             break;
 
+        //obsolète
         case 'i':
             //rep d'entrée à monter en rd-only
             snprintf(in_directory, sizeof(in_directory), "%s", optarg);
@@ -785,6 +786,7 @@ int opt_treatment(int argc, char *argv[]) {
             printf("[CONFIG] Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
             break;
 
+        //obsolète
         case 'o':
             //rep de sortie à monter en rd-wr
             snprintf(out_directory, sizeof(out_directory), "%s", optarg);
@@ -812,13 +814,13 @@ int opt_treatment(int argc, char *argv[]) {
             //dirs à monter en rd-only
             opt_mount_rdonly = 1;
             if (mt_dir_rdonly_count >= MAX_MOUNT_DIRS - 1) {
-                printf("[ERROR] Too much directories to mount in rd-wr." 
+                printf("[ERROR] Too much directories to mount in read-only." 
                               "Please do not mount more than %d directories in rd-wr or modify the MAX_MOUNT_DIRS constant in the source code.\n"
                             , MAX_MOUNT_DIRS);
                 exit(EXIT_FAILURE);
             }
             strncpy(to_mount_rdonly_dirs[mt_dir_rdonly_count], optarg, PATH_MAX);
-            printf("[DEBUG] Mounted dir n°%d (rd-wr): %s\n", mt_dir_rdonly_count, to_mount_rdonly_dirs[mt_dir_rdonly_count]);
+            printf("[DEBUG] Mounted dir n°%d (rdonly): %s\n", mt_dir_rdonly_count, to_mount_rdonly_dirs[mt_dir_rdonly_count]);
 
             mt_dir_rdonly_count++;
             break;
