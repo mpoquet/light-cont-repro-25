@@ -8,7 +8,7 @@ IMAGE: str = "./docker-image-sysbench.tar.gz"
 IMAGE_OCI: str = "./sysbench.oci.tar"
 IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["light-cont", "native", "podman", "docker"] #crun, youki, styrolite, runc
+ENGINES: list[str] = ["youki", "runc", "crun", "light-cont", "native", "podman", "docker"] # styrolite
 
 SYSBENCH_ARGS: dict[str, list[str]] = {
     "cpu": [
@@ -78,7 +78,7 @@ def generate_load_cmd(engine: str) -> list[str]:
         #pas encore implémenté le fait de pouvoir extract une image sans rien lancer dessus
     return None
 
-def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
+def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str) -> list[str]:
     if engine in ["docker", "podman"]:
         return [engine, "run", "--rm", "--network", "host", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
     if engine == "ctr":
@@ -89,15 +89,21 @@ def generate_run_cmd(engine: str, sysbench_args: list[str]) -> list[str]:
         return ["sysbench"] + sysbench_args + ["run"] # ne trouve pas ./rootfs/bin/sysbench alors que le fichier existe
     if engine == "light-cont":
         full_cmd = ["/bin/sysbench"] + sysbench_args + ["run"]
-        cmd_str = " ".join(full_cmd)  # Ceci donne UNE chaîne
+        cmd_str = " ".join(full_cmd) 
         return [
             "../minimalist_runtime/light-cont",
             "--extracted",
             "--path", "./sysbench-rootfs",
             "--run", cmd_str
         ]
-    if engine in ["crun", "youki"]:
-        return [engine, "run", "--bundle", ".", "sysbench"]
+    if engine in ["crun"]:
+        config_name_build = ["config-"] + [mode] + [".json"]
+        config_name = "".join(config_name_build)
+        return [engine, "run", "--config", config_name, "sysbench"]
+    if engine in ["runc", "youki"]:
+        dir_name_build = ["./bench-"] + [mode]
+        bench_dir_name = "".join(dir_name_build)
+        return [engine, "run", "--bundle", bench_dir_name, "sysbench"]
     if engine == "styrolite":
         #todo
         return None
@@ -116,7 +122,7 @@ def main():
     '''
 
     for engine in ENGINES:
-        if engine != "native":
+        if engine not in ["native", "crun", "youki", "runc"]:
             print("Loading image for {}...".format(engine))
             load_cmd = generate_load_cmd(engine)
             print_running_cmd(load_cmd)
@@ -127,9 +133,10 @@ def main():
         for mode in SYSBENCH_ARGS:
             #pour crun et youki:
             #changer config.json pour avoir le fichier config avec la bonne commande à lancer
+            #option --config <fichier>
             sysbench_args: list[str] = SYSBENCH_ARGS[mode]
-            run_cmd = generate_run_cmd(engine, sysbench_args)
-            #print("DEBUG: run_cmd = ", run_cmd)
+            run_cmd = generate_run_cmd(engine, sysbench_args, mode)
+            print("DEBUG: run_cmd = ", run_cmd)
             for n in range(1, N + 1):
                 print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
                 #print_running_cmd(run_cmd)
