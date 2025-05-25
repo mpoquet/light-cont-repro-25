@@ -2,7 +2,7 @@
   "ociVersion": "1.0.2-dev",
   "root": {
     "path": "rootfs",
-    "readonly": true
+    "readonly": false
   },
   "mounts": [
     {
@@ -82,7 +82,7 @@
     }
   ],
   "process": {
-    "terminal": false,
+    "terminal": true,
     "user": {
       "uid": 0,
       "gid": 0
@@ -93,6 +93,7 @@
         "--file-test-mode=seqwr",
         "--file-num=1",
         "--time=10",
+        "--file-fsync-freq=0",
         "run"
 
     ],

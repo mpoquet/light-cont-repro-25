@@ -8,7 +8,7 @@ IMAGE: str = "./docker-image-sysbench.tar.gz"
 IMAGE_OCI: str = "./sysbench.oci.tar"
 IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["youki", "runc", "crun", "light-cont", "native", "podman", "docker"] # styrolite
+ENGINES: list[str] = ["native", "docker", "runc", "podman", "crun", "youki", "light-cont"] # styrolite
 
 SYSBENCH_ARGS: dict[str, list[str]] = {
     "cpu": [
