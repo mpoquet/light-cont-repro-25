@@ -1,5 +1,6 @@
 from subprocess import *
 import os
+import argparse
 
 N = 2
 
@@ -121,7 +122,29 @@ def main():
         setup_ramfs()
     '''
 
-    for engine in ENGINES:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--only', type=str)
+    parser.add_argument('--test-n', type=int)
+    parser.add_argument('--test-type', choices=SYSBENCH_ARGS.keys(), type=str)
+
+    args = parser.parse_args()
+
+    if args.only is not None and args.only in ENGINES:
+        engines = [args.only]
+    else:
+        engines = ENGINES
+
+    if args.test_n is not None and args.test_n > 0:
+        N = args.test_n
+
+    if args.test_type:
+        bench_args = {args.test_type: SYSBENCH_ARGS[args.test_type]}
+    else: 
+        bench_args = SYSBENCH_ARGS
+    
+    print(bench_args)
+
+    for engine in engines:
         if engine not in ["native", "crun", "youki", "runc"]:
             print("Loading image for {}...".format(engine))
             load_cmd = generate_load_cmd(engine)
@@ -129,12 +152,12 @@ def main():
             run(load_cmd, stdout = DEVNULL)
         
     print("Begin tests")
-    for engine in ENGINES:
-        for mode in SYSBENCH_ARGS:
+    for engine in engines:
+        for mode in bench_args:
             #pour crun et youki:
             #changer config.json pour avoir le fichier config avec la bonne commande à lancer
             #option --config <fichier>
-            sysbench_args: list[str] = SYSBENCH_ARGS[mode]
+            sysbench_args: list[str] = bench_args[mode]
             run_cmd = generate_run_cmd(engine, sysbench_args, mode)
             print("DEBUG: run_cmd = ", run_cmd)
             for n in range(1, N + 1):
