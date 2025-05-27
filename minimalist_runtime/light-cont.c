@@ -24,6 +24,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+
 #include "include/jsmn.h"
 
 
@@ -35,7 +36,7 @@
 #define DEFAULT_ROOTFS "./rootfs"
 #define ROOTFS "./rootfs"
 #define CGROUP_PATH "/sys/fs/cgroup/light-cont"
-#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC )//| CLONE_NEWTIME)
+#define DEFAULT_NAMESPACES_FLAGS (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWTIME)
 #define DEFAULT_SECONDCHILD_NSFLAGS (CLONE_NEWCGROUP | CLONE_NEWPID)
 
 int opt_cgroupsv2 = 0;
@@ -318,6 +319,15 @@ int main(int argc, char *argv[]) {
 
     }
 
+    /*
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        perror("clock_gettime(CLOCK_MONOTONIC)");
+        return -1;
+    }
+    printf("Now: %ld\n", now.tv_sec);
+    */
 
 
     //Testing access for specified in and out directories
@@ -423,12 +433,15 @@ int child(void *arg)
     };
 
     //Mapping UID/GID
-    uid_gid_mapping(host_uid, host_gid);
+    if (!opt_no_user_ns) {
+        uid_gid_mapping(host_uid, host_gid);
+    }
+    
 
+
+    //ISOLATION DU TEMPS NE FONCTIONNE PAS
     /*
-    elevate_cap_sys_time();
-
-    printf("[CHILD]:\n");
+    printf("[CHILD]: ");
     print_capabilities();
 
 
@@ -471,11 +484,6 @@ int child(void *arg)
     }
 
     clone3_args.flags = child2_clone_flags;
-
-    //Set fancy shell prompt
-    char prompt[256];
-    snprintf(prompt, sizeof(prompt), "[%s@%s]>> ", getenv("USER"), hostname);
-    setenv("PS1", prompt, 1);
 
     sethostname(hostname, strlen(hostname));
     
@@ -967,6 +975,22 @@ int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_
 
 int run_command(char *const argv[]) {
 
+    /*/
+    char **tmp = realloc(envp, (env_count + 3) * sizeof(char*));
+        if (!tmp) {
+            perror("realloc");
+            //cleanup
+            for (int i = 0; i < env_count; ++i) free(envp[i]);
+            free(envp);
+
+            exit(1);
+        }
+    envp[env_count+1] = "LD_PRELOAD=/usr/lib/faketime/libfaketime.so.1";
+    envp[env_count+2] = "FAKETIME=\"1970-01-01 00:00:00\"";
+    envp[env_count+3] = NULL;
+    env_count = env_count +2;
+    */
+
     execvpe(argv[0], argv, envp);
     perror("execvp failed");
 
@@ -1059,6 +1083,8 @@ int reset_monotonic_and_boottime_clocks_to_zero() {
     offset.clockid = CLOCK_MONOTONIC;
     offset.offset = -((long long)now.tv_sec * 1e9 + now.tv_nsec);
 
+    printf("Now: %ld\n", now.tv_sec);
+
     /*
     // CLOCK_BOOTTIME
     if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
@@ -1080,7 +1106,7 @@ int reset_monotonic_and_boottime_clocks_to_zero() {
 
     if (write(fd, to_write, strlen(to_write))) {
         perror("write timens_offsets");
-        err(EXIT_FAILURE, "write timens offets");
+        err(EXIT_FAILURE, "write timens offsets 1");
         close(fd);
         return -1;
     }
@@ -1121,7 +1147,7 @@ int configure_clocks() {
 
     if (write(fd, to_write, strlen(to_write))) {
         perror("write timens_offsets");
-        err(EXIT_FAILURE, "write timens offets");
+        err(EXIT_FAILURE, "write timens offsets 2");
         close(fd);
         return -1;
     }
