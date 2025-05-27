@@ -2,7 +2,7 @@
   "ociVersion": "1.0.2-dev",
   "root": {
     "path": "rootfs",
-    "readonly": true
+    "readonly": false
   },
   "mounts": [
     {

@@ -10,20 +10,21 @@ IMAGE_OCI: str = "./sysbench.oci.tar"
 IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
 ENGINES: list[str] = ["native", "docker", "runc", "podman", "crun", "youki", "light-cont"] # styrolite
+TIME = "--time=20"
 
 SYSBENCH_ARGS: dict[str, list[str]] = {
     "cpu": [
         "cpu",
         "--cpu-max-prime=2000",  # More demanding workload
         "--threads=4",             # Multi-threaded
-        "--time=10"                # Fixed duration
+        TIME                # Fixed duration
     ],
 
     "fileio": [
         "fileio",
         "--file-test-mode=seqwr",
         "--file-num=1",
-        "--time=10"
+        TIME
     ],
 
     "memory": [
@@ -33,7 +34,7 @@ SYSBENCH_ARGS: dict[str, list[str]] = {
         "--memory-oper=write",      # Or mixed with --memory-access-mode=rnd
         "--memory-scope=global",    # Test full system memory bandwidth
         "--threads=4",              # Multi-threaded
-        "--time=10"
+        TIME
     ]
     
 }
@@ -49,7 +50,7 @@ SYSBENCH_ARGS: dict[str, list[str]] = {
         "--file-fsync-freq=100",
         "--file-rw-ratio=4",
         "--file-path=/mnt/ramfs",  # Pointing to RAMFS
-        "--time=10"
+        TIME
     ]
 '''
 
@@ -69,7 +70,7 @@ def print_running_cmd(cmd: list[str]):
 
 
 def generate_load_cmd(engine: str) -> list[str]:
-    if engine in ["docker", "podman", "ctr"]:
+    if engine in ["docker", "podman"]:
         return [engine, "load", "-i", IMAGE]
     if engine == "crictl":
         return [engine, "load", IMAGE]
@@ -81,13 +82,9 @@ def generate_load_cmd(engine: str) -> list[str]:
 
 def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str) -> list[str]:
     if engine in ["docker", "podman"]:
-        return [engine, "run", "--rm", "--network", "host", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
-    if engine == "ctr":
-        return [engine, "run", "--rm", "docker.io/library/"+IMAGE_NAME, "sysbench", "sysbench"] + sysbench_args + ["run"]
-    if engine == "crictl":
-        return [engine, "exec", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
+        return [engine, "run", "--rm", "--network=none", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"] 
     if engine == "native":
-        return ["sysbench"] + sysbench_args + ["run"] # ne trouve pas ./rootfs/bin/sysbench alors que le fichier existe
+        return ["sysbench"] + sysbench_args + ["run"] 
     if engine == "light-cont":
         full_cmd = ["/bin/sysbench"] + sysbench_args + ["run"]
         cmd_str = " ".join(full_cmd) 
@@ -97,11 +94,7 @@ def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str) -> list[s
             "--path", "./sysbench-rootfs",
             "--run", cmd_str
         ]
-    if engine in ["crun"]:
-        config_name_build = ["config-"] + [mode] + [".json"]
-        config_name = "".join(config_name_build)
-        return [engine, "run", "--config", config_name, "sysbench"]
-    if engine in ["runc", "youki"]:
+    if engine in ["runc", "crun", "youki"]:
         dir_name_build = ["./bench-"] + [mode]
         bench_dir_name = "".join(dir_name_build)
         return [engine, "run", "--bundle", bench_dir_name, "sysbench"]
