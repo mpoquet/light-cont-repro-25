@@ -14,12 +14,10 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <err.h>
-#include <sys/types.h>
 #include <dirent.h>
 #include <getopt.h>
 #include <time.h>
 #include <sys/time.h>
-#include <sys/capability.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -40,8 +38,7 @@
 #define DEFAULT_SECONDCHILD_NSFLAGS (CLONE_NEWCGROUP | CLONE_NEWPID)
 
 int opt_cgroupsv2 = 0;
-int opt_in = 0;
-int opt_out = 0;
+int opt_network = 0;
 int opt_mount_rdwr = 0;
 int opt_mount_rdonly = 0;
 int opt_no_user_ns = 0;
@@ -90,17 +87,9 @@ int child(void *arg);
 
 int create_cgroup_dir(const char *cgroup_folder_path);
 
-int add_to_cgroup(const char *cgroup_folder_path, pid_t pid);
-
 int opt_treatment(int argc, char *argv[]);
 
 char **copy_env();
-
-int cgroup_manager_child(void *arg);
-
-int open_image_shell(const char *root_path);
-
-int open_image_sh_here(void *arg);
 
 int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_ARGS][PATH_MAX]);
 
@@ -122,13 +111,7 @@ const char *get_filename_from_path(const char *path);
 
 int reset_monotonic_and_boottime_clocks_to_zero();
 
-int configure_clocks();
-
-int elevate_cap_sys_time();
-
 char *read_file(const char *path);
-
-int parse_manifest(const char *json_str, char layers[][PATH_MAX]);
 
 int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image);
 
@@ -156,27 +139,6 @@ void test_child_time_ns();
 
 void launch_all_tests();
 
-//FOR DEBUG ONLY
-void print_capabilities() {
-    cap_t caps = cap_get_proc();  // Récupère les capabilités du processus courant
-    if (!caps) {
-        perror("cap_get_proc");
-        exit(EXIT_FAILURE);
-    }
-
-    char *cap_text = cap_to_text(caps, NULL);  // Convertit en chaîne lisible
-    if (!cap_text) {
-        perror("cap_to_text");
-        cap_free(caps);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Capabilités du processus :\n%s\n", cap_text);
-
-    cap_free(cap_text);
-    cap_free(caps);
-}
-
 pid_t clone3(struct clone_args *args) {
     pid_t pid = syscall(SYS_clone3, args, sizeof(struct clone_args));
     if (pid == -1) {
@@ -188,23 +150,6 @@ pid_t clone3(struct clone_args *args) {
 static int pivot_root(const char *new_root, const char *put_old)
 {
     return syscall(SYS_pivot_root, new_root, put_old);
-}
-
-int test_extract_oci() {
-
-    /*if (mkdir("./temp-rootfs", 0777) != 0 && errno != EEXIST) {
-        err(EXIT_FAILURE, "mkdir temp-rootfs");
-    }
-
-    if (mkdir("./temp-rootfs/rootfs", 0777) != 0 && errno != EEXIST) {
-        err(EXIT_FAILURE, "mkdir temp-rootfs/rootfs");
-    }*/
-
-    if (extract_oci_image("./images-test/debian_bookworm-slim.oci.tar", "./temp-rootfs/rootfs") != 0) {
-        err(EXIT_FAILURE, "oci extraction");
-    }
-
-    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -234,13 +179,13 @@ int main(int argc, char *argv[]) {
 
     //User-error management about paths options.
 
-    if (!opt_alr_extracted) {
-        if (!*image_loc) {
+    if (!opt_alr_extracted) { //if the user didn't use --extracted option
+        if (!*image_loc) { // --path not specified (critical)
             printf("[ERROR] No image location has been specified. Please use --path (-p) option to specify the path to the oci image.\n");
             printf("[ERROR] Use --help to display usage and options.\n");
             exit(EXIT_FAILURE);
         } else {
-            if (!*extract_loc) {
+            if (!*extract_loc) { // --extract not specified
                 printf("[WARNING] No extract location has been specified. Default: ./rootfs\n");
                 strncpy(extract_loc, DEFAULT_ROOTFS, PATH_MAX);
 
@@ -256,8 +201,8 @@ int main(int argc, char *argv[]) {
                 printf("\n[SUCCESS] Image succesfully extracted to %s\n", extract_loc);
             }
         }
-    } else {
-        if (!*image_loc) {
+    } else { // --extracted option
+        if (!*image_loc) { // --path not specified
             if (!*extract_loc) {
                 printf("[ERROR] No image location has been specified. \n");
                 printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
@@ -266,10 +211,10 @@ int main(int argc, char *argv[]) {
                 printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
                 exit(EXIT_FAILURE);
             }
-        } else {
+        } else { // --path specified 
             if (!*extract_loc) {
                 strncpy(extract_loc, image_loc, PATH_MAX);
-            } else {
+            } else { // --path and --extractpath specified
                 printf("[ERROR] You used the option --extracted (-E). Please specify the root directory of the image after the --path (-p) option.\n");
                 printf("[ERROR] However, you have also specified another path after the --extractpath (-e) option." 
                                         "Please only specify the root directory path after the --path (-p) option.\n");
@@ -386,8 +331,6 @@ int main(int argc, char *argv[]) {
         close(cgroup_fd);
     }
 
-
-    //à changer car système de mount a changé
     if (host_uid == 0) {
         if (opt_mount_rdwr) {
             for (int i=0; i<mt_dir_count; i++) {
@@ -436,8 +379,6 @@ int child(void *arg)
     if (!opt_no_user_ns) {
         uid_gid_mapping(host_uid, host_gid);
     }
-    
-
 
     //ISOLATION DU TEMPS NE FONCTIONNE PAS
     /*
@@ -487,7 +428,7 @@ int child(void *arg)
 
     sethostname(hostname, strlen(hostname));
     
-    //Based on the pivot_root example from man
+    //Based on the pivot_root example from man pivot_root
 
     /* Ensure that 'new_root' and its parent mount don't have
         shared propagation (which would cause pivot_root() to
@@ -503,8 +444,8 @@ int child(void *arg)
         err(EXIT_FAILURE, "mount-MS_BIND");
 
 
-    //Mounting the entry directory in read-only
-    if (opt_mount_rdonly) { //if in_directory not null
+    //Mounting the readonly dirs
+    if (opt_mount_rdonly) {
 
         for (int i=0; i<mt_dir_rdonly_count; i++) {
             if (mkdir(paths_to_mounted_rdonly_dirs[i], 0777) == -1 && errno != EEXIST) {
@@ -522,17 +463,13 @@ int child(void *arg)
         }
     }
 
-    if (opt_mount_rdwr) { //if out_directory not null
+    if (opt_mount_rdwr) {
         
 
         for (int i=0; i<mt_dir_count; i++) {
             if (mkdir(paths_to_mounted_rdwr_dirs[i], 0777) == -1 && errno != EEXIST) {
                 err(EXIT_FAILURE, "mkdir %s", paths_to_mounted_rdwr_dirs[i]);
             }
-
-            /*if (chmod(paths_to_mounted_rdwr_dirs[i], 0777) == -1) {
-                err(EXIT_FAILURE, "chmod rdwrdir %s", paths_to_mounted_rdwr_dirs[i]);
-            }*/
 
             if (mount(to_mount_dirs[i], paths_to_mounted_rdwr_dirs[i], NULL, MS_BIND, NULL) == -1) {
                 err(EXIT_FAILURE, "mount-MS_BIND - %s - %s", to_mount_dirs[i], paths_to_mounted_rdwr_dirs[i]);
@@ -578,7 +515,6 @@ int child(void *arg)
             launch_all_tests();
             exit(EXIT_SUCCESS);
         }
-        //traitement
         char buf[MAX_ARGS][PATH_MAX];
         char *parsed_args[MAX_ARGS + 1];
         parse_command(command_to_run, parsed_args, buf);
@@ -605,7 +541,7 @@ int child(void *arg)
             }
         }
     }
-    if (opt_out) {
+    if (opt_mount_rdwr) {
         for (int i=0; i<mt_dir_count; i++) {
             const char *dir_name = get_filename_from_path(paths_to_mounted_rdwr_dirs[i]);
             if (umount2(dir_name, MNT_DETACH) == -1) {
@@ -639,35 +575,6 @@ int create_cgroup_dir(const char *cgroup_folder_path) {
     return cgroup_fd;
 }
 
-int add_to_cgroup(const char *cgroup_folder_path, pid_t pid) {
-
-    //Building path string to the cgroup.procs file
-    char proclist_path[strlen(cgroup_folder_path) + strlen("/cgroup.procs ")]; 
-    snprintf(proclist_path, sizeof(proclist_path), "%s%s", cgroup_folder_path, "/cgroup.procs");
-
-    //Int to string conversion of the pid to write into the cgroup.procs file
-    char pid_string[MAX_PID_LENGTH];
-    snprintf(pid_string, sizeof(pid_string), "%d", pid);
-
-
-    //Creating cgroup directory, if it doesn't already exist
-    if (mkdir(cgroup_folder_path, 0777) == -1 && errno != EEXIST)
-        err(EXIT_FAILURE, "mkdir-cgroupfolder");
-
-    //Opening cgroup.procs in write-only, append mode
-    int procs_fd = open(proclist_path, O_WRONLY | O_APPEND | O_CREAT, 0777);
-
-    if (procs_fd == -1) 
-        err(EXIT_FAILURE, "cgroups - open");
-    
-    //Writing specified pid into cgroup.procs
-    if (write(procs_fd, pid_string, strlen(pid_string)) == -1)
-        err(EXIT_FAILURE, "write");
-
-    close(procs_fd);
-    return 0;
-}
-
 int opt_treatment(int argc, char *argv[]) {
 
     //Based on this example: https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
@@ -692,8 +599,6 @@ int opt_treatment(int argc, char *argv[]) {
           {"extracted",   no_argument,       0, 'E'},
           {"path",       required_argument, 0, 'p'},
           {"extractpath",required_argument, 0, 'e'},
-          //{"in",         required_argument, 0, 'i'},
-          //{"out",        required_argument, 0, 'o'},
           {"mount",      required_argument, 0, 'm'},
           {"mountrdonly",required_argument, 0, 'M'},
           {"run",        required_argument, 0, 'r'},
@@ -728,13 +633,14 @@ int opt_treatment(int argc, char *argv[]) {
             break;
 
         case 'n':
-            //désactiver isolation network
+            //disable network isolation
+            opt_network = 1;
             printf("[CONFIG] Network isolation disabled\n");
             remove_flag(&clone_flags, CLONE_NEWNET);
             break;
 
         case 'u':
-            //désactiver user namespace
+            //disable user namespace
             printf("[CONFIG] User namespace disabled\n");
             opt_no_user_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWUSER);
@@ -775,7 +681,7 @@ int opt_treatment(int argc, char *argv[]) {
             break;
 
         case 'p':
-            //changer variable root_path
+            //changer variable image_loc
             path_specified = 1;
             snprintf(image_loc, sizeof(image_loc), "%s", optarg);
             printf("[CONFIG] OCI Image location: %s\n", optarg);
@@ -784,22 +690,6 @@ int opt_treatment(int argc, char *argv[]) {
         case 'e':
             snprintf(extract_loc, sizeof(extract_loc), "%s", optarg);
             printf("[CONFIG] Extracted image location: %s\n", optarg);
-            break;
-
-        //obsolète
-        case 'i':
-            //rep d'entrée à monter en rd-only
-            snprintf(in_directory, sizeof(in_directory), "%s", optarg);
-            opt_in = 1;
-            printf("[CONFIG] Entry directory location (mounted in /in_dir in the container, read-only): %s\n", optarg);
-            break;
-
-        //obsolète
-        case 'o':
-            //rep de sortie à monter en rd-wr
-            snprintf(out_directory, sizeof(out_directory), "%s", optarg);
-            opt_out = 1;
-            printf("[CONFIG] Output directory location (mounted in /out_dir in the container, read-write): %s\n", optarg);
             break;
 
         case 'm':
@@ -842,7 +732,6 @@ int opt_treatment(int argc, char *argv[]) {
             env_arg = strdup(optarg);
 
             if (strcmp(env_arg, "KEEPCURRENTENV") == 0) {
-                //charger env courant
                 //must be first --env call
 
                 envp = copy_env();
@@ -861,7 +750,7 @@ int opt_treatment(int argc, char *argv[]) {
 
                 envp = tmp;
                 envp[env_count++] = env_arg;
-                envp[env_count] = NULL; // Toujours terminer le tableau
+                envp[env_count] = NULL;
             }
             break;
 
@@ -905,53 +794,6 @@ char **copy_env(void) {
     return env_copy;
 }
 
-int cgroup_manager_child(void *arg) {
-    char        path[PATH_MAX];
-    char        **args = arg;
-    char        *cgroup_folder_path = args[0];
-
-    //Allocating space for a stack
-    char *stack = malloc(STACK_SIZE); 
-    if (stack == NULL) {
-        perror("malloc");
-        return 1;
-    }
-
-    //Adding self to a new cgroup
-    add_to_cgroup(cgroup_folder_path, getpid());
-
-    char *child_args[] = { image_loc, NULL };
-    int child_pid = clone(child, stack + STACK_SIZE, clone_flags, child_args);
-
-    if (child_pid == -1) {
-        perror("clone");
-        return 1;
-    }
-
-    waitpid(child_pid, NULL, 0);
-
-    return 0;
-}
-
-//obsolète
-int open_image_shell(const char *root_path) {
-
-    char sh_path[PATH_MAX];
-
-    snprintf(sh_path, sizeof(sh_path), "%s/bin/sh", root_path);
-
-    char *argshell[] = {sh_path, "-i", NULL};
-    execvp(argshell[0], argshell);
-
-    perror("execvp failed");
-    return 1;    
-}
-
-//obsolète
-int open_image_sh_here(void *arg) {
-    return open_image_shell("");
-}
-
 int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_ARGS][PATH_MAX]) {
     int argc = 0;
     char buffer[PATH_MAX * (MAX_ARGS + 1)];
@@ -968,7 +810,7 @@ int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_
         token = strtok(NULL, " ");
     }
 
-    argv_out[argc] = NULL; // execvp needs a NULL-terminated array
+    argv_out[argc] = NULL; //execvp needs a NULL-terminated array
 
     return argc;
 }
@@ -1063,6 +905,7 @@ const char* get_filename_from_path(const char *path) {
     }
 }
 
+//doesn't work, maybe only on my system - i can't even write in timens_offsets manually, even as superuser
 int reset_monotonic_and_boottime_clocks_to_zero() {
     int fd = open("/proc/self/timens_offsets", O_WRONLY);
     if (fd == -1) {
@@ -1117,86 +960,6 @@ int reset_monotonic_and_boottime_clocks_to_zero() {
     return 0;
 }
 
-//Marche pas
-int configure_clocks() {
-    int fd = open("/proc/self/timens_offsets", O_WRONLY);
-    if (fd == -1) {
-        perror("open /proc/self/timens_offsets");
-        return -1;
-    }
-
-    struct timespec now;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        perror("clock_gettime(CLOCK_MONOTONIC)");
-        close(fd);
-        return -1;
-    }
-    long long offset_monotonic = now.tv_sec;
-
-    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0) {
-        perror("clock_gettime(CLOCK_BOOTTIME)");
-        close(fd);
-        return -1;
-    }
-    long long offset_boottime = now.tv_sec;
-
-    char to_write[100];
-
-    snprintf(to_write, sizeof(to_write), "monotonic %lld 0\nboottime %lld 0", offset_monotonic, offset_boottime);
-
-    if (write(fd, to_write, strlen(to_write))) {
-        perror("write timens_offsets");
-        err(EXIT_FAILURE, "write timens offsets 2");
-        close(fd);
-        return -1;
-    }
-    
-
-
-    close(fd);
-    return 0;
-}
-
-//Marche pas, le process a déjà toute les caps il ne peut juste pas écrire dans le fichier
-int elevate_cap_sys_time() {
-    cap_t caps;
-    caps = cap_get_proc();  // Obtenir les capabilités actuelles du processus
-
-    if (!caps) {
-        perror("cap_get_proc");
-        return 1;
-    }
-
-    // Ajouter CAP_SYS_TIME dans la set effective et permitted
-    cap_value_t cap_list[] = {CAP_SYS_TIME};
-    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, cap_list, CAP_SET) == -1) {
-        perror("cap_set_flag EFFECTIVE");
-        return 1;
-    }
-
-    if (cap_set_flag(caps, CAP_PERMITTED, 1, cap_list, CAP_SET) == -1) {
-        perror("cap_set_flag PERMITTED");
-        return 1;
-    }
-
-    if (cap_set_proc(caps) == -1) {
-        perror("cap_set_proc");
-        return 1;
-    }
-
-    cap_free(caps);
-
-    printf("CAP_SYS_TIME activée !\n");
-
-    // Exemple : changer l'heure (requiert cette cap)
-    // struct timeval tv = {.tv_sec = 1234567890, .tv_usec = 0};
-    // settimeofday(&tv, NULL);
-
-    return 0;
-}
-
-
 /**
  * Read entire file into memory.
  */
@@ -1225,43 +988,6 @@ int elevate_cap_sys_time() {
     buf[size] = '\0';
     fclose(f);
     return buf;
-}
-
-//Parse Docker Manifest. Not used here.
-int parse_manifest(const char *json_str, char layers[][PATH_MAX]) {
-    jsmn_parser parser;
-    jsmntok_t tokens[1024];
-    jsmn_init(&parser);
-    int ret = jsmn_parse(&parser, json_str, strlen(json_str), tokens, sizeof(tokens)/sizeof(tokens[0]));
-    if (ret < 0) {
-        fprintf(stderr, "Failed to parse JSON: %d\n", ret);
-        return -1;
-    }
-    int tokcount = ret;
-
-    // Find "Layers" key
-    for (int i = 1; i < tokcount; i++) {
-        if (tokens[i].type == JSMN_STRING &&
-            (int)tokens[i].end - tokens[i].start == 6 &&
-            strncmp(json_str + tokens[i].start, "Layers", 6) == 0) {
-            // Next token is array
-            if (tokens[i+1].type != JSMN_ARRAY) continue;
-            int arr_size = tokens[i+1].size;
-            int idx = i+2;
-            if (arr_size > MAX_LAYERS) arr_size = MAX_LAYERS;
-            for (int j = 0; j < arr_size; j++) {
-                jsmntok_t *t = &tokens[idx];
-                int len = t->end - t->start;
-                if (len >= PATH_MAX) len = PATH_MAX-1;
-                memcpy(layers[j], json_str + t->start, len);
-                layers[j][len] = '\0';
-                idx++;
-            }
-            return arr_size;
-        }
-    }
-    fprintf(stderr, "No Layers array found in manifest.json\n");
-    return -1;
 }
 
 int parse_manifest_oci(const char *json_str, char digests[][PATH_MAX], const char *path_to_image) {
@@ -1414,7 +1140,7 @@ int extract_tar(const char *layer_path, const char *outdir) {
         if (r != ARCHIVE_OK) {
             const char *link_target = archive_entry_hardlink(entry);
             if (link_target) {
-                // C'est un hard link, on ignore l'erreur pour éviter les warnings non bloquants
+                // Ignoring hard link errors
                 fprintf(stderr, "[OCI EXTRACTION] Warning: skipping unresolved hard link to %s\n", link_target);
 
                 continue;
@@ -1568,8 +1294,8 @@ void print_help() {
         "--run \"/path/cmd args\"\t-r\tRun command path.\n"
         "--cgroup\t\t-C\tInclude the runtime in a cgroup (v2 only)\tWARNING: Need to be superuser\n"
         "--network\t\t-n\tDisable Network isolation\n"
-        "--in\t\t\t-i\tSpecify an entry directory (read-only)\n"
-        "--out\t\t\t-o\tSpecify an output directory (read-write)\n"
+        "--mountrdonly\t\t\t-M\tSpecify an entry directory (read-only)\n"
+        "--mount\t\t\t-m\tSpecify an output directory (read-write)\n"
         "--nouserns\t\t-u\tDisable the use of an user namespace\t\tWARNING: Need to be superuser\n"
         "--nopidns\t\t-P\tDisable the use of a PID namespace\n"
         "--nocgroupns\t\t-c\tDisable the use of a cgroup namespace\n"
@@ -1599,7 +1325,14 @@ void test_child_pid_ns() {
 }
 
 void test_child_mount_ns() {
-
+    printf("\n==========[TEST: Mount system isolation]==========\n\n");
+    printf("[TEST] [CHILD]: Executing \"mount\" command, it should print an error.\n");
+    
+    if (system("mount") != 0) {
+        printf("[TEST] [CHILD] Something went wrong. Testing with busybox.\n\n");
+        system("/bin/busybox mount");
+    }
+    printf("\n");
 }
 
 void test_child_uts_ns(const char *real_hostname) {
@@ -1633,16 +1366,27 @@ void test_child_user_ns() {
 }
 
 void test_child_net_ns() {
+    printf("\n==========[TEST: Network isolation]==========\n\n");
 
+    if (opt_network) {
+        printf("[TEST] [CHILD] Network isolation disabled. Executing \"ping 1.1.1.1\"." 
+            "It should work if the image has ping installed and if the host is connected\n\n");
+    } else {
+        printf("[TEST] [CHILD] Network isolation disabled. Executing \"ping 1.1.1.1\"." 
+            "It should print an error.\n\n");
+    }
+
+    if (system("ping -c 1 1.1.1.1") != 0) {
+        printf("[TEST] [CHILD] Something went wrong. Testing with busybox.\n\n");
+        system("/bin/busybox ping -c 1 1.1.1.1");
+    }
+    printf("\n");
 }
 
 void test_child_ipc_ns() {
 
 }
 
-void test_child_time_ns() {
-
-}
 
 void launch_all_tests() {
     test_child_pid_ns();
@@ -1651,18 +1395,12 @@ void launch_all_tests() {
 
     test_child_uts_ns(host_hostname);
 
-    //not implemented yet
     test_child_mount_ns();
 
     //not implemented yet
     test_child_ipc_ns();
 
-    //not implemented yet
     test_child_net_ns();
-
-    //not implemented yet
-    test_child_time_ns();
-
 
     printf("\n==========[ALL TESTS HAVE TERMINATED]==========\n");
 }
