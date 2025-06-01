@@ -9,7 +9,7 @@ IMAGE: str = "./docker-image-sysbench.tar.gz"
 IMAGE_OCI: str = "./sysbench.oci.tar"
 IMAGE_OCI_PATH_FROM_MR: str = "../overhead_benchmark/sysbench.oci.tar"
 IMAGE_NAME = "sysbench:tp"
-ENGINES: list[str] = ["native", "docker", "runc", "podman", "crun", "youki", "light-cont"] # styrolite
+ENGINES: list[str] = ["native", "docker", "runc", "podman", "crun", "youki", "light-cont"] 
 TIME = "--time=20"
 
 SYSBENCH_ARGS: dict[str, list[str]] = {
@@ -80,10 +80,14 @@ def generate_load_cmd(engine: str) -> list[str]:
         #pas encore implémenté le fait de pouvoir extract une image sans rien lancer dessus
     return None
 
-def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str) -> list[str]:
+def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str, args) -> list[str]:
     if engine in ["docker", "podman"]:
+        if args.fileio_ramfs == True:
+            return [engine, "run", "--rm", "--network=none", "--volume", "/tmp/benchfileio:/benchfileio", "--workdir", "/benchfileio", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
         return [engine, "run", "--rm", "--network=none", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"] 
     if engine == "native":
+        if args.fileio_ramfs == True:
+            os.chdir("/tmp/benchfileio")
         return ["sysbench"] + sysbench_args + ["run"] 
     if engine == "light-cont":
         full_cmd = ["/bin/sysbench"] + sysbench_args + ["run"]
@@ -119,6 +123,8 @@ def main():
     parser.add_argument('--only', type=str)
     parser.add_argument('--test-n', type=int)
     parser.add_argument('--test-type', choices=SYSBENCH_ARGS.keys(), type=str)
+    parser.add_argument('--fileio-ramfs', action="store_true")
+    parser.add_argument('--cpu-mitigate-noise', action="store_true")
 
     args = parser.parse_args()
 
@@ -145,23 +151,49 @@ def main():
             run(load_cmd, stdout = DEVNULL)
         
     print("Begin tests")
-    for engine in engines:
-        for mode in bench_args:
-            #pour crun et youki:
-            #changer config.json pour avoir le fichier config avec la bonne commande à lancer
-            #option --config <fichier>
-            sysbench_args: list[str] = bench_args[mode]
-            run_cmd = generate_run_cmd(engine, sysbench_args, mode)
-            print("DEBUG: run_cmd = ", run_cmd)
-            for n in range(1, N + 1):
-                print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
+
+    #option permettant de mitiger le bruit liée à la possible (sur)chauffe préalable du cpu en lançant les technos à tour de rôle. 
+    # Il faut également lancer avec l'option --test-type cpu
+    if args.cpu_mitigate_noise:
+        i = 0
+        while (i < N):
+            
+            for engine in engines:
+                sysbench_args: list[str] = bench_args["cpu"]
+                run_cmd = generate_run_cmd(engine, sysbench_args, "cpu", args)
+                print("[engine={}, test={}, num={}/{}]".format(engine, "cpu", i + 1, N))
                 #print_running_cmd(run_cmd)
                 p1 = Popen(run_cmd, stdout=PIPE, stderr=PIPE) #stdout=PIPE
-                parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
+                parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", "cpu", "-o", FILE_OUT]
                 p2 = Popen(parse_cmd, stdin=p1.stdout, stdout=PIPE)
                 p1.stdout.close()   
                 p2.communicate()
                 p1.wait()
+            i = i + 1
+
+
+    else:
+        for engine in engines:
+            for mode in bench_args:
+                #pour crun et youki:
+                #changer config.json pour avoir le fichier config avec la bonne commande à lancer
+                #option --config <fichier>
+                sysbench_args: list[str] = bench_args[mode]
+                run_cmd = generate_run_cmd(engine, sysbench_args, mode, args)
+                #print("DEBUG: run_cmd = ", run_cmd)
+                for n in range(1, N + 1):
+                    if mode == "lauchtime":
+                        #COMPLETER ICI
+                    
+                    else:
+                    print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
+                    #print_running_cmd(run_cmd)
+                    p1 = Popen(run_cmd, stdout=PIPE, stderr=PIPE) #stdout=PIPE
+                    parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
+                    p2 = Popen(parse_cmd, stdin=p1.stdout, stdout=PIPE)
+                    p1.stdout.close()   
+                    p2.communicate()
+                    p1.wait()
 
 if __name__ == "__main__":
     main()
