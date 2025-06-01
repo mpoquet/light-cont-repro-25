@@ -114,11 +114,10 @@ Si le lien a expiré, vous pouvez lancer `./convert_sysbenchtar_to_oci.sh`, un s
 **Voir installation pour la premier lancement du programme, plusieurs étapes de setup est nécessaire**
 
 # Script de traitement des données
-
-
+Un appel à ce script est direct, ne prenant aucun argument, le fichier data.csv doit être dans le même répertoire. 
 # Script de test des sources de reproductibilités
-
-
+Un appel à ce script est direct, ne prenant aucun argument, les configurations sont automatisés
+Mais il faut avoir docker et podman sur machine. 
 ## License
 - Code: Apache-2.0
 - Everything else, in particular documentation and measurements: CC-BY-SA-4.0
