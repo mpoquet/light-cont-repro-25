@@ -9,9 +9,7 @@
 [/overhead_benchmark/benchmark.py](/overhead_benchmark/benchmark.py)
 
 ## Script de traitement des données:
-/overhead_benchmark/traitement.py
-ou
-[/overhead_benchmark/copy_of_chapitre_interval_de_confiance.py](/overhead_benchmark/copy_of_chapitre_interval_de_confiance.py)
+[/overhead_benchmark/traitement.py](/overhead_benchmark/traitement.py)
 
 ## Script de test des sources de reproductibilités:
 [/test_repro/test_repro.py](/test_repro/test_repro.py)
