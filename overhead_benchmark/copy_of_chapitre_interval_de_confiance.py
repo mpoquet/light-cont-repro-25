@@ -8,11 +8,12 @@ from typing import List, Dict, Tuple
 
 # Constants
 RUNTIMES = ["runc", "crun", "docker", "podman", "youki", "light-cont", "native"]
-OVERHEADS = ["fileio", "cpu", "memory"]
+OVERHEADS = ["fileio", "cpu", "memory", "launchtime"]
 METRICS = {
     "fileio": "MiB/s",
     "cpu": "Events/sec",
-    "memory": "MiB/sec"
+    "memory": "MiB/sec",
+    "launchtime": "seconds"
 }
 PLOT_SIZE = (18, 20)
 DPI = 300
