@@ -18,7 +18,6 @@
 #include <getopt.h>
 #include <time.h>
 #include <sys/time.h>
-
 #include <archive.h>
 #include <archive_entry.h>
 
@@ -42,7 +41,7 @@ int opt_network = 0;
 int opt_mount_rdwr = 0;
 int opt_mount_rdonly = 0;
 int opt_no_user_ns = 0;
-int opt_no_time_ns = 0;
+//int opt_no_time_ns = 0;
 int opt_no_cgroup_ns = 0;
 int opt_no_uts_ns = 0;
 int opt_no_pid_ns = 0;
@@ -109,6 +108,7 @@ void uid_gid_mapping(int host_uid, int host_gid);
 
 const char *get_filename_from_path(const char *path);
 
+//Not used
 int reset_monotonic_and_boottime_clocks_to_zero();
 
 char *read_file(const char *path);
@@ -264,17 +264,6 @@ int main(int argc, char *argv[]) {
 
     }
 
-    /*
-    struct timespec now;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        perror("clock_gettime(CLOCK_MONOTONIC)");
-        return -1;
-    }
-    printf("Now: %ld\n", now.tv_sec);
-    */
-
-
     //Testing access for specified in and out directories
     if (opt_mount_rdonly) {
         for (int i=0; i<mt_dir_rdonly_count; i++) {
@@ -380,38 +369,19 @@ int child(void *arg)
         uid_gid_mapping(host_uid, host_gid);
     }
 
-    //ISOLATION DU TEMPS NE FONCTIONNE PAS
     /*
-    printf("[CHILD]: ");
-    print_capabilities();
+        Après beaucoup de sueurs, de sang et de larmes, je n'ai jamais réussi à faire fonctionner l'isolation du temps
+        Le principe est le suivant: en étant le premier et le seul process dans le time namespace qui vient d'être créé, écrire dans /proc/self/timens_offset
+        On peut ainsi écrire des offsets pour faire changer la perception du process et de ses fils sur la BOOTTIME_CLOCK et la MONOTONIC_CLOCK
+        cf: https://www.man7.org/linux/man-pages/man7/time_namespaces.7.html
 
-
-    struct timeval time_value;
-    time_value.tv_sec=0;
-    time_value.tv_usec=0;
-
-    if (settimeofday(&time_value, NULL) !=0 ) {
-        //err(EXIT_FAILURE, "settimeofday");
-    }
-    
-    if (!opt_no_time_ns) reset_monotonic_and_boottime_clocks_to_zero();
-
-    if (access("/proc/self/timens_offsets", W_OK) != 0) {
-        perror("pas dans un time namespace");
-    }
-
-    printf("CLOCK_MONOTONIC = %d\n", CLOCK_MONOTONIC);   // doit être 1
-    printf("CLOCK_BOOTTIME = %d\n", CLOCK_BOOTTIME);
-
-    
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    printf("CLOCK_MONOTONIC: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
-
-    clock_gettime(CLOCK_BOOTTIME, &t);
-    printf("CLOCK_BOOTTIME: %ld.%.9lds\n", t.tv_sec, t.tv_nsec);
+        Cependant, même en le faisant selon l'exemple du manuel (dans un shell, à la main), j'ai toujours eu l'accès refusé au fichier, même en étant su.
+        Selon provient donc possiblement de ma machine. J'ai quand même laissé la fonction (pas propre du tout) qui est censé le faire automatiquement dans le code,
+        voir reset_monotonic_and_boottime_clocks_to_zero().
+        Si vous êtes un dev qui reprend mon code et que arrivez à le faire marcher, je pense qu'ici est le meilleur endroit pour le faire. Paix sur le monde.
     */
 
+    
     //Check if the user wish to include the container in a cgroup
     if (opt_cgroupsv2 == 1) {
 
@@ -595,7 +565,7 @@ int opt_treatment(int argc, char *argv[]) {
           {"nocgroupns",  no_argument,       0, 'c'},
           {"noutsns",     no_argument,       0, 'U'},
           {"nopidns",     no_argument,       0, 'P'},
-          {"notimens",    no_argument,       0, 't'},
+          //{"notimens",    no_argument,       0, 't'},
           {"extracted",   no_argument,       0, 'E'},
           {"path",       required_argument, 0, 'p'},
           {"extractpath",required_argument, 0, 'e'},
@@ -608,7 +578,7 @@ int opt_treatment(int argc, char *argv[]) {
         
       int option_index = 0;
 
-      c = getopt_long (argc, argv, "hTCnucUPtEp:e:m:M:r:v:",
+      c = getopt_long (argc, argv, "hTCnucUPEp:e:m:M:r:v:",
                        long_options, &option_index);
 
       if (c == -1)
@@ -667,12 +637,14 @@ int opt_treatment(int argc, char *argv[]) {
             remove_flag(&child2_clone_flags, CLONE_NEWPID);
             break;
         
+        /*
         case 't':
             //disable Time namespace
             printf("[CONFIG] Time namespace disabled\n");
             opt_no_time_ns = 1;
             remove_flag(&clone_flags, CLONE_NEWTIME);
             break;
+        */
 
         case 'E':
             //The image is already extracted
@@ -816,22 +788,6 @@ int parse_command(const char *input, char *argv_out[MAX_ARGS + 1], char buf[MAX_
 }
 
 int run_command(char *const argv[]) {
-
-    /*/
-    char **tmp = realloc(envp, (env_count + 3) * sizeof(char*));
-        if (!tmp) {
-            perror("realloc");
-            //cleanup
-            for (int i = 0; i < env_count; ++i) free(envp[i]);
-            free(envp);
-
-            exit(1);
-        }
-    envp[env_count+1] = "LD_PRELOAD=/usr/lib/faketime/libfaketime.so.1";
-    envp[env_count+2] = "FAKETIME=\"1970-01-01 00:00:00\"";
-    envp[env_count+3] = NULL;
-    env_count = env_count +2;
-    */
 
     execvpe(argv[0], argv, envp);
     perror("execvp failed");
@@ -1300,7 +1256,7 @@ void print_help() {
         "--nopidns\t\t-P\tDisable the use of a PID namespace\n"
         "--nocgroupns\t\t-c\tDisable the use of a cgroup namespace\n"
         "--noutsns\t\t-U\tDisable the use of a UTS namespace\n"
-        "--notimens\t\t-t\tDisable the use of a time namespace\n"
+        //"--notimens\t\t-t\tDisable the use of a time namespace\n"
         "--test\t\t\t-T\tLaunch embedded isolation tests\n"
         "--env VAR=val\t\t-v\tAdd environment variable\n"
         "\n"

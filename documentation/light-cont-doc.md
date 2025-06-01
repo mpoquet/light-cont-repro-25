@@ -76,7 +76,6 @@ Light-cont relies on two dependencies:
 - `--nopidns`: Disable the use of a PID namespace.
 - `--nocgroupns`: Disable the use of a cgroup namespace.
 - `--noutsns`: Disable the use of a UTS namespace.
-- `--notimens`: Disable the use of a time namespace.
 - `--test`: Launch embedded isolation tests.
 - `--env VAR=val`: Add environment variable. If you call `--env KEEPCURRENTENV` in the first occurence of `--env` in the options, your current environment will be kept. You can add others environment variables by subsequent `--env` calls.
 

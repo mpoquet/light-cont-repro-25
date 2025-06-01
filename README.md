@@ -85,11 +85,10 @@ TODO: je vais probablement retirer l'option `--fileio-ramfs` et demander à l'ut
 
 ## Contraintes
 
-Nécessite sysbench, docker, podman, runc, crun et youki installées sur la machine pour fonctionner correctement. Si un runtime n'est pas installé, le programme se lancera mais les tests ne s'exécuteront évidemment pas pour ce programme.
+Nécessite sysbench, docker, podman, runc, crun et youki installées sur la machine pour fonctionner correctement. Si un runtime n'est pas installé, le programme se lancera mais les tests ne s'exécuteront évidemment pas pour ce programme. \
 Nécessite également l'image `sysbench:tp`, et la tarball `sysbench.oci.tar` présente dans le même répertoire. 
-[Lien vers un transfert de la tarball sysbench.oci.at](https://www.swisstransfer.com/d/1ea0199a-cf8e-4172-b8f3-5b099f0853d6)
-Si le lien a expiré, vous pouvez lancer `./convert_sysbenchtar_to_oci.sh`, un script simple qui utilise podman pour convertir `docker-image-sysbench.tar.gz` en `sysbench-oci.oci.tar`. Ce script a été fait à la hâte est n'est absolument pas modulable. Vous pouvez cependant le modifier.
-TODO: Expliquer comment obtenir la tarball sysbench oci (trouver version )
+[Lien vers un transfert de la tarball sysbench.oci.tar](https://www.swisstransfer.com/d/1ea0199a-cf8e-4172-b8f3-5b099f0853d6)
+Si le lien a expiré, vous pouvez lancer `./convert_sysbenchtar_to_oci.sh`, un script simple qui utilise podman pour convertir `docker-image-sysbench.tar.gz` en `sysbench-oci.oci.tar`. Ce script a été fait à la hâte est n'est pas modulable. Vous pouvez cependant le modifier au besoin.
 
 # Script de traitement des données
 
