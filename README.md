@@ -11,7 +11,7 @@ Pour plus d'information, voir la documentation complète (en anglais): [/documen
 Light-cont est seulement compatible avec les systèmes d'exploitation Linux, car il repose sur des fonctionnalités du noyau linux pour fonctionner. \
 Light-cont possède 2 dépendances, libarchive et jsmn 
 
-- Libarchive est une librairie plutôt populaire généralement présente dans les bases de données des gestionnaires de paquets. Également disponible sur leur [repo Github](https://github.com/libarchive/libarchive)
+- Libarchive est une librairie plutôt populaire généralement présente dans les bases de données des gestionnaires de paquets. Également disponible sur leur [repo Github](https://github.com/libarchive/libarchive). La version utilisée pendant le développement est la version `3.7.9-2`, cependant cela devrait fonctionner avec des versions ultérieures.
 
 - Jsmn est un parser de fichier json minimaliste sous licence MIT, consistant seulement un fichier d'en-tête, jsmn.h, déjà présent dans ce projet à /minimalist_runtime/include/jsmn.h . [Lien vers leur repo Github](https://github.com/zserge/jsmn)
 
@@ -21,6 +21,8 @@ D'autres compilateurs requièrent peut être une syntaxe légèrement différent
 ## Lancement
 
 Light-cont traite seulement des images de conteneurs au format OCI. Il également possible d'exécuter des bundle déjà décompressés, c'est-à-dire un répertoire contenant le file system de l'image. Voici les principales options pour un démarrage rapide:
+
+### Options principales
 
 - `--help`: Affiche un message d'aide.
 - `--path loc`: Spécifier la localisation `loc` de l'image OCI. Si `--extracted` est utilisé, alors spécifier plutôt la localisation du répertoire racine du file system de l'image décompressée.
@@ -48,13 +50,46 @@ La version minimale du kernel pour utiliser le programme est la version `5.7`.
 Le noyau doit également autoriser les unprivileged user namespace. 
 Seulement les cgroups version 2 sont supportés. Pour lancer le programme avec les options `--cgroup` ou `--nouserns`, l'utilisitateur doit être root.
 
+### Troubleshooting
+
+Pour extraire une image, light-cont extrait temporairement son contenu dans `/tmp/...`. Si votre répertoire `/tmp/` est monté en tant que tmpfs ou ramfs et que votre mémoire vive est saturée, il est possible que l'image ne puisse pas être extraite. Vous verrez alors une succession de `Write failed` dans votre terminal. Il faut alors libérer la mémoire avant de relancer le programme.
+
 # Script de benchmark des différents runtimes
 
 ## Installation, compilation et dépendances
 
+Nécessite Python 3. Pour fonctionner, le programme a besoin de sysbench_script.py, déjà présent dans le même dossier.
+Pour fonctionner correctement, le programme a besoin que les runtimes suivants soient installés sur la machine: docker, podman, runc, crun et youki.
+Il y a également besoin de [sysbench](https://github.com/akopytov/sysbench) installé sur la machine, et de la tarball `sysbench.oci.tar` présente dans le même répertoire.
+Le programme lance trois types de benchmarks sysbench: CPU, memory et file i/o, sur les différents runtimes de conteneur cités plus haut, mais également en natif (en dehors d'un conteneur) et avec light-cont.
+
 ## Lancement
 
+Lancer avec `python benchmark.py`.
+
+### Options principales
+
+Les options sont combinables.
+
+- `--only engine`: Lance les benchmarks seulement sur l'engine (technologie de runtime de conteneur) spécifié. Le runtime doit être dans la liste des runtimes supportés (docker, podman, runc, crun, youki, native, light-cont).
+
+- `--test-type benchmark`: Lance seulement le benchmark du type spécifié (cpu, fileio, memory).
+
+- `--test-n nb`: Lance nb fois les tests.
+
+- `--fileio-ramfs`: Lance les tests file i/o sur un ramfs (en réalité un tmpfs, dans /tmp). Voir la section suivante.
+
+### Test de file i/o sur un tmpfs (ramfs)
+
+TODO: je vais probablement retirer l'option `--fileio-ramfs` et demander à l'utilisateur d'exécuter le script dans /tmp (en vérifiant qu'il est bien monté en tant que tmpfs), et faire un script pour copier les fichiers nécessaires là-bas. J'expliquerai ici comment procéder.
+
 ## Contraintes
+
+Nécessite sysbench, docker, podman, runc, crun et youki installées sur la machine pour fonctionner correctement. Si un runtime n'est pas installé, le programme se lancera mais les tests ne s'exécuteront évidemment pas pour ce programme.
+Nécessite également l'image `sysbench:tp`, et la tarball `sysbench.oci.tar` présente dans le même répertoire. 
+[Lien vers un transfert de la tarball sysbench.oci.at](https://www.swisstransfer.com/d/1ea0199a-cf8e-4172-b8f3-5b099f0853d6)
+Si le lien a expiré, vous pouvez lancer `./convert_sysbenchtar_to_oci.sh`, un script simple qui utilise podman pour convertir `docker-image-sysbench.tar.gz` en `sysbench-oci.oci.tar`. Ce script a été fait à la hâte est n'est absolument pas modulable. Vous pouvez cependant le modifier.
+TODO: Expliquer comment obtenir la tarball sysbench oci (trouver version )
 
 # Script de traitement des données
 
