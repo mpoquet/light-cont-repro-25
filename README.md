@@ -65,7 +65,7 @@ Le programme lance trois types de benchmarks sysbench: CPU, memory et file i/o, 
 
 ## Lancement
 
-Lancer avec `python benchmark.py`.
+Lancer avec `python benchmark.py`. Il est nécessaire d'avoir lancé au préalable le daemon de docker (`systemctl start docker`, nécessite l'accès root).
 
 ### Options principales
 
@@ -77,7 +77,7 @@ Les options sont combinables.
 
 - `--test-n nb`: Lance nb fois les tests.
 
-- `--fileio-ramfs`: Lance les tests file i/o sur un ramfs (en réalité un tmpfs, dans /tmp). Voir la section suivante.
+- `--cpu-mitigate-noise`: Lance seulement les tests cpu, en alternant les technos pour mitiger le bruit liée à la chauffe du cpu
 
 ### Test de file i/o sur un tmpfs (ramfs)
 

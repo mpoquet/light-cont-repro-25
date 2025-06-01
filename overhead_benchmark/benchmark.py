@@ -1,6 +1,7 @@
 from subprocess import *
 import os
 import argparse
+import time
 
 N = 2
 
@@ -35,6 +36,10 @@ SYSBENCH_ARGS: dict[str, list[str]] = {
         "--memory-scope=global",    # Test full system memory bandwidth
         "--threads=4",              # Multi-threaded
         TIME
+    ],
+
+    "launchtime": [
+        "--version"
     ]
     
 }
@@ -81,6 +86,23 @@ def generate_load_cmd(engine: str) -> list[str]:
     return None
 
 def generate_run_cmd(engine: str, sysbench_args: list[str], mode: str, args) -> list[str]:
+    if mode == "launchtime":
+        if engine in ["docker", "podman"]:
+            return [engine, "run", "--rm", "--network=none", IMAGE_NAME, "sysbench", "--version"]
+        if engine == "native":
+            return ["sysbench", "--version"]
+        if engine == "light-cont":
+            return [
+                "../minimalist_runtime/light-cont",
+                "--extracted",
+                "--path", "./sysbench-rootfs",
+                "--run", "/bin/sysbench --version"
+            ]
+        if engine in ["runc", "crun", "youki"]:
+            # Il faut que config.json soit pré-configuré avec `["/bin/sysbench", "--version"]`
+            return [engine, "run", "--bundle", "./bench-launchtime", "sysbench"]
+
+
     if engine in ["docker", "podman"]:
         if args.fileio_ramfs == True:
             return [engine, "run", "--rm", "--network=none", "--volume", "/tmp/benchfileio:/benchfileio", "--workdir", "/benchfileio", IMAGE_NAME, "sysbench"] + sysbench_args + ["run"]
@@ -175,25 +197,46 @@ def main():
     else:
         for engine in engines:
             for mode in bench_args:
-                #pour crun et youki:
-                #changer config.json pour avoir le fichier config avec la bonne commande à lancer
-                #option --config <fichier>
+
                 sysbench_args: list[str] = bench_args[mode]
                 run_cmd = generate_run_cmd(engine, sysbench_args, mode, args)
                 #print("DEBUG: run_cmd = ", run_cmd)
                 for n in range(1, N + 1):
-                    if mode == "lauchtime":
-                        #COMPLETER ICI
-                    
+
+                    #traitement différent pour launchtime, donc on disjoint les cas
+                    if mode == "launchtime":
+                        print(f"[engine={engine}, test=lauchtime, num={n}/{N}]")
+                        start = time.time()
+                        run(run_cmd, stdout=DEVNULL, stderr=DEVNULL)
+                        end = time.time()
+                        elapsed = round(end - start, 6)
+
+                        #on utilise un fichier temporaire, j'ai pas réussi à faire fonctionner avec stdout
+                        temp_file = f"./.tmp_overhead_{engine}_{n}.txt"
+                        with open(temp_file, "w") as f:
+                            f.write(f"{elapsed}\n")
+
+                        parse_cmd = [
+                            "python", "./sysbench_script.py",
+                            "-c", engine,
+                            "-b", "launchtime",
+                            "-f", temp_file,
+                            "-o", FILE_OUT
+                        ]
+                        run(parse_cmd)
+
+                        # Nettoyage
+                        os.remove(temp_file)
+
                     else:
-                    print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
-                    #print_running_cmd(run_cmd)
-                    p1 = Popen(run_cmd, stdout=PIPE, stderr=PIPE) #stdout=PIPE
-                    parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
-                    p2 = Popen(parse_cmd, stdin=p1.stdout, stdout=PIPE)
-                    p1.stdout.close()   
-                    p2.communicate()
-                    p1.wait()
+                        print("[engine={}, test={}, num={}/{}]".format(engine, mode, n, N))
+                        #print_running_cmd(run_cmd)
+                        p1 = Popen(run_cmd, stdout=PIPE, stderr=PIPE) #stdout=PIPE
+                        parse_cmd = ["python", "./sysbench_script.py", "-c", engine, "-b", mode, "-o", FILE_OUT]
+                        p2 = Popen(parse_cmd, stdin=p1.stdout, stdout=PIPE)
+                        p1.stdout.close()   
+                        p2.communicate()
+                        p1.wait()
 
 if __name__ == "__main__":
     main()
