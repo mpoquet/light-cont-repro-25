@@ -45,10 +45,10 @@ Pour plus d'exemples d'utilisations, consulter la documentation complète se tro
 
 ## Contraintes
 
-Light-cont repose entièrement sur des fonctionnalités apportées par le kernel Linux, ainsi il est impossiblde de lancer le programme sur un autre système d'exploitation.
+Light-cont repose entièrement sur des fonctionnalités apportées par le kernel Linux, ainsi il est impossible de de lancer le programme sur un autre système d'exploitation.
 La version minimale du kernel pour utiliser le programme est la version `5.7`. 
 Le noyau doit également autoriser les unprivileged user namespace. 
-Seulement les cgroups version 2 sont supportés. Pour lancer le programme avec les options `--cgroup` ou `--nouserns`, l'utilisitateur doit être root.
+Seulement les cgroups version 2 sont supportés. Pour lancer le programme avec les options `--cgroup` ou `--nouserns`, l'utilisateur doit être root.
 
 ### Troubleshooting
 
