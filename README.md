@@ -60,7 +60,7 @@ Pour extraire une image, light-cont extrait temporairement son contenu dans `/tm
 
 Nécessite Python 3. Pour fonctionner, le programme a besoin de sysbench_script.py, déjà présent dans le même dossier.
 Pour fonctionner correctement, le programme a besoin que les runtimes suivants soient installés sur la machine: docker, podman, runc, crun et youki.
-Il y a également besoin de [sysbench](https://github.com/akopytov/sysbench) installé sur la machine, et de la tarball `sysbench.oci.tar` présente dans le même répertoire.
+Il y a également besoin de [sysbench](https://github.com/akopytov/sysbench) installé sur la machine, de l'archive gzip `docker-image-sysbench.tar.gz` (fourni par M. Poquet) [(Lien de téléchargement)](https://www.swisstransfer.com/d/ba7e72c8-3cbe-4602-a664-5805bb932a01) de la tarball `sysbench.oci.tar` présente dans le même répertoire.
 Le programme lance trois types de benchmarks sysbench: CPU, memory et file i/o, sur les différents runtimes de conteneur cités plus haut, mais également en natif (en dehors d'un conteneur) et avec light-cont.
 
 ## Lancement
@@ -86,7 +86,7 @@ TODO: je vais probablement retirer l'option `--fileio-ramfs` et demander à l'ut
 ## Contraintes
 
 Nécessite sysbench, docker, podman, runc, crun et youki installées sur la machine pour fonctionner correctement. Si un runtime n'est pas installé, le programme se lancera mais les tests ne s'exécuteront évidemment pas pour ce programme. \
-Nécessite également l'image `sysbench:tp`, et la tarball `sysbench.oci.tar` présente dans le même répertoire. 
+Nécessite également l'image `sysbench:tp` (provenant de l'archive [`docker-image-sysbench.tar.gz`](https://www.swisstransfer.com/d/ba7e72c8-3cbe-4602-a664-5805bb932a01)), et la tarball `sysbench.oci.tar` présente dans le même répertoire. 
 [Lien vers un transfert de la tarball sysbench.oci.tar](https://www.swisstransfer.com/d/1ea0199a-cf8e-4172-b8f3-5b099f0853d6)
 Si le lien a expiré, vous pouvez lancer `./convert_sysbenchtar_to_oci.sh`, un script simple qui utilise podman pour convertir `docker-image-sysbench.tar.gz` en `sysbench-oci.oci.tar`. Ce script a été fait à la hâte est n'est pas modulable. Vous pouvez cependant le modifier au besoin.
 
